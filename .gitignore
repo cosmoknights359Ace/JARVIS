@@ -30,3 +30,4 @@ jarvis-backup-prerewrite.bundle
 
 # IDE
 .vscode/
+.aider*
