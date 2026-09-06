@@ -172,6 +172,41 @@ import queue
 import platform
 import threading
 import webbrowser
+import subprocess
+
+
+# ============================================================
+# Bootstrap: re-exec under the project venv if the current
+# interpreter is missing the GUI deps. Fixes the classic
+# "line 180 import customtkinter -> ModuleNotFoundError" crash
+# that happens when a .pyw shortcut launches under a Python
+# that doesn't have customtkinter installed (e.g. the system
+# msys Python). The project venv (win-venv/) has everything.
+# ============================================================
+def _running_under_module(name):
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
+if not _running_under_module("customtkinter"):
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    _VENV_CANDIDATES = [
+        os.path.join(_HERE, "win-venv", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "jarvis-env", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "venv", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "win-venv", "Scripts", "python.exe"),
+        os.path.join(_HERE, "jarvis-env", "Scripts", "python.exe"),
+    ]
+    _VENV_PY = next((p for p in _VENV_CANDIDATES if os.path.isfile(p)), None)
+    if _VENV_PY:
+        # Re-launch ourselves under the venv. pythonw = no console window.
+        subprocess.Popen([_VENV_PY, os.path.abspath(__file__)], close_fds=True)
+        sys.exit(0)
+
+
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog
