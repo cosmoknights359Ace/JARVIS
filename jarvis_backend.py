@@ -155,6 +155,15 @@ class MemoryStore:
         del self.data[k]
         self.save()
 
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
+    def keys(self):
+        return self.data.keys()
+
+    def values(self):
+        return self.data.values()
+
     def clear(self):
         self.data.clear()
         self.save()
