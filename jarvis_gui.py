@@ -172,6 +172,41 @@ import queue
 import platform
 import threading
 import webbrowser
+import subprocess
+
+
+# ============================================================
+# Bootstrap: re-exec under the project venv if the current
+# interpreter is missing the GUI deps. Fixes the classic
+# "line 180 import customtkinter -> ModuleNotFoundError" crash
+# that happens when a .pyw shortcut launches under a Python
+# that doesn't have customtkinter installed (e.g. the system
+# msys Python). The project venv (win-venv/) has everything.
+# ============================================================
+def _running_under_module(name):
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
+if not _running_under_module("customtkinter"):
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    _VENV_CANDIDATES = [
+        os.path.join(_HERE, "win-venv", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "jarvis-env", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "venv", "Scripts", "pythonw.exe"),
+        os.path.join(_HERE, "win-venv", "Scripts", "python.exe"),
+        os.path.join(_HERE, "jarvis-env", "Scripts", "python.exe"),
+    ]
+    _VENV_PY = next((p for p in _VENV_CANDIDATES if os.path.isfile(p)), None)
+    if _VENV_PY:
+        # Re-launch ourselves under the venv. pythonw = no console window.
+        subprocess.Popen([_VENV_PY, os.path.abspath(__file__)], close_fds=True)
+        sys.exit(0)
+
+
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog
@@ -268,6 +303,33 @@ def log_action(action):
 # dict-ish API so call sites barely change).
 memory = backend.MemoryStore(MEMORY_FILE)
 
+
+def _atomic_write(path, obj, indent):
+    """Write JSON to a temp file next to the target, then os.replace() it into
+    place. Keeps the on-disk file consistent even if the process dies mid-write
+    (a plain open('w') truncate can leave a half-written, unparseable file).
+    Important because memory.json / chat_history.json are shared with jarvis.py
+    and could be written from two processes."""
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as e:
+        log_action(f"Failed to write {path}: {e}")
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def save_memory(mem):
+    _atomic_write(MEMORY_FILE, mem, indent=4)
+
 # Rolling chat history list, persisted to disk. Kept as a plain list of
 # {role, content} dicts for minimal blast radius; bounds applied on save.
 try:
@@ -280,11 +342,7 @@ chat_history = [m for m in chat_history
 
 
 def save_chat_history():
-    try:
-        with open(CHAT_HISTORY_FILE, "w") as f:
-            json.dump(chat_history[-MAX_HISTORY_MESSAGES:], f, indent=2)
-    except OSError as e:
-        log_action(f"Failed to save chat history: {e}")
+    _atomic_write(CHAT_HISTORY_FILE, chat_history[-MAX_HISTORY_MESSAGES:], indent=2)
 
 
 pending_action = None                 # "shutdown" | "restart" | None
@@ -1002,7 +1060,12 @@ _thinking = False
 def _animate_thinking(i=0):
     if not _thinking:
         return
-    status_label.configure(text="JARVIS IS THINKING" + "." * (i % 4))
+    # _animate_thinking is driven by app.after in the loop below, but the
+    # very first tick is scheduled from start_thinking() on whatever thread
+    # called it (often the AI worker thread). Route the widget write through
+    # app.after(0) so a background thread never touches Tkinter directly.
+    app.after(0, lambda: status_label.configure(
+        text="JARVIS IS THINKING" + "." * (i % 4)))
     app.after(350, lambda: _animate_thinking(i + 1))
 
 
@@ -1015,21 +1078,34 @@ def start_thinking():
 def stop_thinking(final_text="Ready"):
     global _thinking
     _thinking = False
-    status_label.configure(text=final_text)
+    # Called from the AI/health worker threads — never configure Tk widgets
+    # directly off the main thread.
+    app.after(0, lambda: status_label.configure(text=final_text))
 
 
 # Connectivity state: which backends are reachable. We surface a single
 # "online" flag that's True if either local Ollama or a configured cloud
 # endpoint is reachable.
 _ollama_online = True
+_online_lock = threading.Lock()
+
+
+def _set_online(state):
+    """Thread-safe update of the Ollama reachability flag. Written from the
+    health-check thread and the AI worker thread, read by the main-thread
+    clock/status-pill — so it must go through a lock, not a bare assignment."""
+    with _online_lock:
+        global _ollama_online
+        _ollama_online = state
 
 
 def _health_check_loop():
     """Background loop: probes the available providers so the status dot
     reflects reality (green = reachable, red = down) instead of always
     claiming ONLINE. Local Ollama is always checked; cloud is checked only
-    when a cloud model/endpoint is configured."""
-    global _ollama_online
+    when a cloud model/endpoint is configured. Status is updated through the
+    thread-safe _set_online() so the main-thread clock/status-pill reads a
+    consistent value."""
     cfg = providers.load_config()
     while True:
         local_ok, _ = providers.check_ollama()
@@ -1037,7 +1113,7 @@ def _health_check_loop():
         cloud_ok = True
         if cloud_cfg.get("base_url"):
             cloud_ok, _ = providers.check_cloud(cfg)
-        _ollama_online = local_ok or cloud_ok
+        _set_online(local_ok or cloud_ok)
         time.sleep(15)
 
 
@@ -1133,10 +1209,13 @@ def get_ai_response(message, is_regenerate=False):
     staring at 'thinking...' for the entire generation) and lets you Stop
     a reply that's clearly going the wrong way instead of waiting it out."""
     global _ai_busy, _stop_generation, _last_user_message, _last_assistant_reply
-    global _ollama_online
 
     if not is_regenerate:
-        chat_history.append({"role": "user", "content": message})
+        # Guard against a "New chat" that arrived while this turn was queued:
+        # if a stop/new-chat was already requested, don't seed the (now-wiped)
+        # history with this user message again.
+        if not _stop_generation:
+            chat_history.append({"role": "user", "content": message})
     _last_user_message = message
     model_name = resolve_model(message)
     spec = _last_resolved_spec
@@ -1195,15 +1274,9 @@ def get_ai_response(message, is_regenerate=False):
         if buffer:
             in_code = _stream_insert(buffer, in_code)
 
-        _ollama_online = True
+        _set_online(True)
         reply = "".join(reply_parts)
         append_chat("\n\n", "jarvis")
-
-        if reply.strip():
-            chat_history.append({"role": "assistant", "content": reply})
-            save_chat_history()
-            _last_assistant_reply = reply
-            speak(_speakable(reply))
 
         elapsed = time.monotonic() - start_t
         if eval_count and eval_duration:
@@ -1213,8 +1286,15 @@ def get_ai_response(message, is_regenerate=False):
             timing = f"Ready · {elapsed:.1f}s · {model_name}"
 
         if _stop_generation:
+            # The user cancelled mid-stream. Discard the partial answer:
+            # don't persist it to history and don't read it aloud.
             append_chat("[SYSTEM] > Generation stopped.\n\n", "system")
             timing = "Stopped"
+        elif reply.strip():
+            chat_history.append({"role": "assistant", "content": reply})
+            save_chat_history()
+            _last_assistant_reply = reply
+            speak(_speakable(reply))
         stop_thinking(timing)
     except (providers.CloudError, providers.CloudUnavailable) as e:
         _ollama_online = False
@@ -1225,7 +1305,7 @@ def get_ai_response(message, is_regenerate=False):
         )
         stop_thinking("Ready")
     except Exception as e:
-        _ollama_online = False
+        _set_online(False)
         append_chat(
             f"\n[ERROR] Couldn't reach the model ({model_name}). "
             f"Is `ollama serve` running?\n{e}\n\n", "error",
@@ -1474,6 +1554,8 @@ Utilities:
 - what time is it
 - whats todays date
 - shutdown pc / restart pc
+- battery                 (laptop charge level / plug state)
+- system status           (CPU / RAM / battery / network / Ollama)
 
 Keyboard:
 - Enter         send message
@@ -1585,6 +1667,41 @@ def cmd_screenshot(_msg):
     threading.Thread(target=analyze_screenshot, daemon=True).start()
 
 
+def cmd_battery(_msg):
+    """Reports laptop battery state via psutil. On a desktop (no battery)
+    psutil returns None, so we say so instead of crashing."""
+    batt = psutil.sensors_battery()
+    if batt is None:
+        append_chat("Jarvis: This machine has no battery sensor.\n\n")
+        return
+    pct = batt.percent
+    plugged = "plugged in" if batt.power_plugged else "on battery"
+    eta = ""
+    if batt.secsleft not in (psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN):
+        mins = batt.secsleft // 60
+        eta = f", ~{mins} min remaining"
+    append_chat(f"Jarvis: Battery {pct:.0f}% ({plugged}{eta}).\n\n")
+
+
+def cmd_system_status(_msg):
+    """Surfaces the same live stats the sidebar bars/status pill show, in chat,
+    so you can ask Jarvis instead of eyeballing the HUD."""
+    batt = psutil.sensors_battery()
+    batt_line = f"Battery: {batt.percent:.0f}% ({'plugged in' if batt.power_plugged else 'on battery'})" \
+        if batt else "Battery: n/a"
+    net = psutil.net_io_counters()
+    append_chat(
+        "Jarvis System Status:\n"
+        f"  CPU: {psutil.cpu_percent():.0f}%\n"
+        f"  RAM: {psutil.virtual_memory().percent:.0f}% "
+        f"({psutil.virtual_memory().available // (1024 * 1024)} MB free)\n"
+        f"  {batt_line}\n"
+        f"  Network: {net.bytes_sent // (1024 * 1024)} MB sent / "
+        f"{net.bytes_recv // (1024 * 1024)} MB received\n"
+        f"  Ollama: {'ONLINE' if _ollama_online else 'OFFLINE'}\n\n"
+    )
+
+
 def handle_search(message):
     """'search <query>' -> Google search in the default browser."""
     query = message[7:].strip()
@@ -1634,10 +1751,11 @@ SIMPLE_COMMANDS = {
     "whats todays date": cmd_date,
     "shutdown pc": cmd_shutdown,
     "restart pc": cmd_restart,
+    "battery": cmd_battery,
+    "system status": cmd_system_status,
     "analyze image": cmd_analyze_image,
     "screenshot": cmd_screenshot,
     "analyze screen": cmd_screenshot,
-    # comment
     "clear screen": cmd_clear_screen,
     "clear chat": cmd_clear_screen,
     "clear history": cmd_clear_history,
