@@ -179,11 +179,18 @@ from urllib.parse import quote_plus
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw
-import ollama
 import pyttsx3
 import pyautogui
 import psutil
 import speech_recognition as sr
+
+# Backend (model state, routing, memory) + provider layer (local Ollama and
+# any OpenAI-compatible cloud endpoint). The GUI used to talk to Ollama
+# directly, which duplicated the routing/memory logic and made cloud models
+# unreachable. All inference now flows through these two modules so there's a
+# single source of truth and the whole core is unit-testable.
+import jarvis_backend as backend
+import jarvis_providers as providers
 
 # ============================================================
 # Paths / persistence
@@ -208,29 +215,27 @@ MAX_CONTEXT_MESSAGES = 6     # messages actually sent to Ollama per turn
 MAX_CHATBOX_LINES = 800      # visible lines kept in the on-screen log
 
 
-def load_memory():
+def log_action(action):
     try:
-        with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        with open(LOG_FILE, "a") as f:
+            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {action}\n")
+    except OSError:
+        pass  # logging should never be able to crash the app
 
 
-def save_memory(mem):
-    try:
-        with open(MEMORY_FILE, "w") as f:
-            json.dump(mem, f, indent=4)
-    except OSError as e:
-        log_action(f"Failed to save memory: {e}")
+# Memory is backed by jarvis_backend.MemoryStore (auto-persists on write,
+# dict-ish API so call sites barely change).
+memory = backend.MemoryStore(MEMORY_FILE)
 
-
-def load_chat_history():
-    try:
-        with open(CHAT_HISTORY_FILE, "r") as f:
-            data = json.load(f)
-            return data[-MAX_HISTORY_MESSAGES:]
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+# Rolling chat history list, persisted to disk. Kept as a plain list of
+# {role, content} dicts for minimal blast radius; bounds applied on save.
+try:
+    with open(CHAT_HISTORY_FILE, "r") as f:
+        chat_history = json.load(f)[-MAX_HISTORY_MESSAGES:]
+except (FileNotFoundError, json.JSONDecodeError):
+    chat_history = []
+chat_history = [m for m in chat_history
+               if isinstance(m, dict) and "role" in m and "content" in m]
 
 
 def save_chat_history():
@@ -241,24 +246,13 @@ def save_chat_history():
         log_action(f"Failed to save chat history: {e}")
 
 
-def log_action(action):
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {action}\n")
-    except OSError:
-        pass  # logging should never be able to crash the app
-
-
-memory = load_memory()
-chat_history = load_chat_history()   # rolling message list, persisted to disk
 pending_action = None                 # "shutdown" | "restart" | None
 
-AVAILABLE_MODELS = ["auto", "qwen2.5:3b", "qwen2.5-coder:7b"]
-CODING_KEYWORDS = [
-    "code", "python", "java", "c++", "javascript", "html", "css",
-    "program", "script", "leetcode", "bug", "error", "debug",
-]
-current_model = "auto"
+# Model selection + sticky auto-routing now live in jarvis_backend.ModelState,
+# which builds its registry from jarvis_providers (local Ollama models and any
+# configured cloud models). The GUI holds one instance and calls .current /
+# .resolve() instead of re-implementing the routing logic.
+model_state = backend.ModelState()
 
 # --- Generation / perf tuning -------------------------------------------
 # keep_alive tells Ollama how long to keep a model resident in RAM/VRAM
@@ -270,18 +264,13 @@ KEEP_ALIVE = "30m"
 current_temperature = 0.4
 current_num_predict = -1     # -1 = model default (no artificial cap)
 
-# "auto" mode used to re-resolve the model on *every single message*,
-# which meant a normal back-and-forth coding conversation ("write a
-# function" -> "why does it fail" -> "fix it") could bounce between the
-# 3b and 7b model repeatedly, and every bounce forces Ollama to unload
-# one model and load the other from disk. That reload — not the model
-# itself — was almost certainly the "takes longer for coding questions"
-# slowdown. These two globals make auto mode *sticky*: once a coding
-# message switches to the coder model, plain follow-ups stay on it
-# instead of swapping back immediately.
-_last_resolved_model = None
-_consecutive_non_coding = 0
-STICKY_NON_CODING_THRESHOLD = 3
+# "auto" mode is sticky: once a coding message switches to the coder model,
+# plain follow-ups stay on it instead of swapping back immediately. The actual
+# counters live inside model_state.router now; we mirror the resolved id here
+# purely so the status pill can show what "auto" picked.
+current_model = "auto"
+_last_resolved_model = None          # mirror for the status pill only
+_last_resolved_spec = None           # resolved ModelSpec for the live request
 
 # ============================================================
 # Voice engine — single persistent worker + queue so speech
@@ -564,13 +553,7 @@ _hud_panel = None
 
 
 def _open_terminal():
-    system = platform.system()
-    if system == "Windows":
-        os.system("start cmd")
-    elif system == "Darwin":
-        os.system("open -a Terminal")
-    else:
-        os.system("x-terminal-emulator &")
+    backend.open_terminal()
 
 
 QUICK_ACTIONS = [
@@ -728,16 +711,24 @@ entry.grid(row=0, column=1, sticky="ew", pady=6)
 
 
 def set_current_model(choice):
-    """One place to change the model — keeps the bar selector and the
-    Settings dropdown in sync (they used to disagree with each other)."""
+    """One place to change the model — updates the shared backend state and
+    keeps the bar selector and Settings dropdown in sync."""
     global current_model
+    try:
+        model_state.set_current(choice)
+    except ValueError:
+        set_status(f"Unknown model: {choice}")
+        return
     current_model = choice
     model_selector.set(choice)
     set_status(f"Model set to {choice}")
 
 
+# The selector is populated from the provider registry (local + cloud models),
+# so the bar always reflects what's actually available.
+_model_choices = model_state.menu_choices()
 model_selector = ctk.CTkOptionMenu(
-    bottom, values=["auto"] + AVAILABLE_MODELS[1:], width=132, height=36,
+    bottom, values=_model_choices, width=132, height=36,
     corner_radius=18, fg_color=PANEL_ALT, button_color=CYAN_DIM,
     text_color=TEXT_MAIN, font=("Rajdhani", 13),
     command=set_current_model)
@@ -797,20 +788,26 @@ def stop_thinking(final_text="Ready"):
     status_label.configure(text=final_text)
 
 
+# Connectivity state: which backends are reachable. We surface a single
+# "online" flag that's True if either local Ollama or a configured cloud
+# endpoint is reachable.
 _ollama_online = True
 
 
 def _health_check_loop():
-    """Pings the Ollama server in the background so the status dot reflects
-    reality (green = reachable, red = down) instead of always claiming
-    ONLINE. Cheap: ollama.list() against a local server is instant."""
+    """Background loop: probes the available providers so the status dot
+    reflects reality (green = reachable, red = down) instead of always
+    claiming ONLINE. Local Ollama is always checked; cloud is checked only
+    when a cloud model/endpoint is configured."""
     global _ollama_online
+    cfg = providers.load_config()
     while True:
-        try:
-            ollama.list()
-            _ollama_online = True
-        except Exception:
-            _ollama_online = False
+        local_ok, _ = providers.check_ollama()
+        cloud_cfg = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
+        cloud_ok = True
+        if cloud_cfg.get("base_url"):
+            cloud_ok, _ = providers.check_cloud(cfg)
+        _ollama_online = local_ok or cloud_ok
         time.sleep(15)
 
 
@@ -822,21 +819,15 @@ _ai_busy = False
 
 
 def resolve_model(message):
-    global _last_resolved_model, _consecutive_non_coding
-    if current_model != "auto":
-        return current_model
-
-    is_coding = any(word in message.lower() for word in CODING_KEYWORDS)
-    if is_coding:
-        _consecutive_non_coding = 0
-        _last_resolved_model = "qwen2.5-coder:7b"
-    else:
-        _consecutive_non_coding += 1
-        # Only fall back to the light model once we've seen a few
-        # non-coding messages in a row — a single "why?" or "thanks"
-        # mid-debugging-session shouldn't trigger a full model reload.
-        if _last_resolved_model is None or _consecutive_non_coding >= STICKY_NON_CODING_THRESHOLD:
-            _last_resolved_model = "qwen2.5:3b"
+    """Resolve which model to use for this message via the shared backend
+    state (sticky auto-routing + cloud-aware registry). Returns the wire
+    model name. Mirrors the spec into _last_resolved_spec so the caller can
+    pick the right provider, and _last_resolved_model so the status pill can
+    show what 'auto' picked."""
+    global _last_resolved_model, _last_resolved_spec
+    spec = model_state.resolve(message)
+    _last_resolved_spec = spec
+    _last_resolved_model = spec.model if spec else None
     return _last_resolved_model
 
 
@@ -905,16 +896,11 @@ def get_ai_response(message, is_regenerate=False):
     global _ai_busy, _stop_generation, _last_user_message, _last_assistant_reply
     global _ollama_online
 
-    memory_text = "\n".join(f"{k}: {v}" for k, v in memory.items())
-    system_message = {
-        "role": "system",
-        "content": f"You are Jarvis, a concise personal AI assistant.\n\n"
-                    f"User memory:\n{memory_text}\n\nAnswer concisely.",
-    }
     if not is_regenerate:
         chat_history.append({"role": "user", "content": message})
     _last_user_message = message
     model_name = resolve_model(message)
+    spec = _last_resolved_spec
 
     _ai_busy = True
     _stop_generation = False
@@ -931,21 +917,27 @@ def get_ai_response(message, is_regenerate=False):
     eval_count = eval_duration = None
     start_t = time.monotonic()
 
+    # Assemble the request in the GUI-agnostic backend, then open the provider
+    # stream. Both helpers are pure/testable; the GUI only renders the result.
+    # The cloud path reads its endpoint/key from config via jarvis_providers
+    # (no shell access, no filesystem writes beyond the existing persistence
+    # files — purely network + model inference).
+    cfg = providers.load_config()
+    system_prompt = backend.build_system_prompt(memory)
+    messages = backend.build_request_messages(
+        chat_history, system_prompt, MAX_CONTEXT_MESSAGES)
     try:
-        stream = ollama.chat(
-            model=model_name,
-            messages=[system_message] + chat_history[-MAX_CONTEXT_MESSAGES:],
-            stream=True,
+        stream = backend.open_provider_stream(
+            cfg, spec, messages,
             keep_alive=KEEP_ALIVE,
-            options={
-                "temperature": current_temperature,
-                **({"num_predict": current_num_predict} if current_num_predict != -1 else {}),
-            },
+            temperature=current_temperature,
+            num_predict=current_num_predict,
+            stop_flag=lambda: _stop_generation,
         )
-        for part in stream:
+
+        for piece, meta in stream:
             if _stop_generation:
                 break
-            piece = part.get("message", {}).get("content", "")
             if piece:
                 reply_parts.append(piece)
                 buffer += piece
@@ -958,9 +950,9 @@ def get_ai_response(message, is_regenerate=False):
                 if emit:
                     in_code = _stream_insert(emit, in_code)
                 last_flush = now
-            if part.get("done"):
-                eval_count = part.get("eval_count")
-                eval_duration = part.get("eval_duration")
+            if meta is not None:
+                eval_count = meta.get("eval_count")
+                eval_duration = meta.get("eval_duration")
         if buffer:
             in_code = _stream_insert(buffer, in_code)
 
@@ -985,10 +977,18 @@ def get_ai_response(message, is_regenerate=False):
             append_chat("[SYSTEM] > Generation stopped.\n\n", "system")
             timing = "Stopped"
         stop_thinking(timing)
+    except (providers.CloudError, providers.CloudUnavailable) as e:
+        _ollama_online = False
+        append_chat(
+            f"\n[ERROR] Cloud endpoint failed ({model_name}): {e}\n"
+            f"Check your [llm] base_url / API key in config.toml, or pick a "
+            f"local model.\n\n", "error",
+        )
+        stop_thinking("Ready")
     except Exception as e:
         _ollama_online = False
         append_chat(
-            f"\n[ERROR] Couldn't reach Ollama ({model_name}). "
+            f"\n[ERROR] Couldn't reach the model ({model_name}). "
             f"Is `ollama serve` running?\n{e}\n\n", "error",
         )
         stop_thinking("Ready")
@@ -1024,26 +1024,24 @@ def copy_last_response():
 
 
 def get_installed_models():
-    """Model names currently pulled in Ollama, for the Settings dropdown."""
-    try:
-        names = {m.get("model") or m.get("name")
-                 for m in ollama.list().get("models", [])}
-        return sorted(n for n in names if n)
-    except Exception:
-        return []
+    """Model ids available in the registry (local Ollama + configured cloud),
+    for the Settings dropdown. Local ids that aren't pulled yet are flagged by
+    check_and_warm_models() at launch."""
+    return sorted(model_state.model_ids)
 
 
 def check_and_warm_models():
     """Runs once at launch, off the GUI thread. Two jobs:
-    1. Tell the user up front if a model in AVAILABLE_MODELS hasn't
+    1. Tell the user up front if a local model in the registry hasn't
        actually been pulled, instead of them finding out mid-conversation.
-    2. Send a throwaway 1-token prompt to the text models so they're
+    2. Send a throwaway 1-token prompt to the local text models so they're
        already loaded into RAM/VRAM by the time you send your first real
        message — the first message after launch used to eat the full
        model-load time on top of the actual response time.
+    (Cloud models are skipped — they don't need warming and are paid-by-token.)
     """
     try:
-        installed = {m.get("model") or m.get("name") for m in ollama.list().get("models", [])}
+        installed = providers.local_list_models()
     except Exception as e:
         append_chat(
             f"[ERROR] Can't reach the Ollama server: {e}\n"
@@ -1052,25 +1050,21 @@ def check_and_warm_models():
         return
 
     missing = [
-        m for m in AVAILABLE_MODELS
-        if m != "auto" and not any(m == i or i.startswith(m.split(":")[0] + ":") for i in installed)
+        sid for sid in model_state.model_ids
+        if sid != "auto" and not sid.startswith("cloud/")
+        and not any(sid == i or i.startswith(sid.split(":")[0] + ":") for i in installed)
     ]
     if missing:
         append_chat(
-            "[SYSTEM] > Not pulled yet: " + ", ".join(missing) +
+            "[SYSTEM] > Not pulled yet (local): " + ", ".join(missing) +
             "  (run `ollama pull <model>`)\n\n", "system",
         )
 
-    for model_name in ("qwen2.5:3b", "qwen2.5-coder:7b"):
-        if model_name in missing:
+    for sid in model_state.model_ids:
+        if sid.startswith("cloud/") or sid in missing:
             continue
         try:
-            ollama.chat(
-                model=model_name,
-                messages=[{"role": "user", "content": "hi"}],
-                keep_alive=KEEP_ALIVE,
-                options={"num_predict": 1},
-            )
+            providers.local_warm(sid, keep_alive=KEEP_ALIVE)
         except Exception:
             pass  # non-critical — worst case the first real message warms it up instead
 
@@ -1094,15 +1088,7 @@ def _run_vision(image_path, label, prompt="Analyze this image in detail."):
     _vision_busy = True
     set_status(f"Analyzing {label}...")
     try:
-        response = ollama.chat(
-            model=VISION_MODEL,
-            messages=[{
-                "role": "user",
-                "content": prompt,
-                "images": [image_path],
-            }],
-        )
-        result = response["message"]["content"]
+        result = providers.local_vision_analyze(VISION_MODEL, image_path, prompt)
         append_chat(f"\nJARVIS VISION ({label}) >\n{result}\n\n", "jarvis")
         chat_history.append({"role": "user", "content": f"[Image: {label}] {prompt}"})
         chat_history.append({"role": "assistant", "content": result})
@@ -1169,56 +1155,27 @@ def toggle_voice():
 # ============================================================
 
 def _open_path_cross_platform(path):
-    system = platform.system()
-    if system == "Windows":
-        os.startfile(path)
-    elif system == "Darwin":
-        os.system(f'open "{path}"')
-    else:
-        os.system(f'xdg-open "{path}"')
+    backend.open_path(path)
 
 
 def open_vscode():
-    os.system("code")
+    backend.open_vscode()
 
 
 def open_edge():
-    system = platform.system()
-    candidates = {
-        "Windows": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        "Darwin": "/Applications/Microsoft Edge.app",
-        "Linux": "microsoft-edge",
-    }
-    path = candidates.get(system)
-    if not path:
-        raise RuntimeError(f"No Edge launch path configured for {system}.")
-    if system == "Windows" and not os.path.exists(path):
-        raise RuntimeError("Edge not found at the expected Windows path.")
-    _open_path_cross_platform(path) if system != "Linux" else os.system("microsoft-edge &")
+    backend.open_edge()
 
 
 def open_downloads():
-    _open_path_cross_platform(os.path.join(os.path.expanduser("~"), "Downloads"))
+    backend.open_downloads()
 
 
 def open_notepad():
-    system = platform.system()
-    if system == "Windows":
-        os.startfile("notepad")
-    elif system == "Darwin":
-        os.system("open -a TextEdit")
-    else:
-        os.system("gedit &")
+    backend.open_notepad()
 
 
 def open_calculator():
-    system = platform.system()
-    if system == "Windows":
-        os.system("calc")
-    elif system == "Darwin":
-        os.system("open -a Calculator")
-    else:
-        os.system("gnome-calculator &")
+    backend.open_calculator()
 
 
 APP_COMMANDS = {
@@ -1440,16 +1397,8 @@ SIMPLE_COMMANDS = {
 
 
 def run_shutdown_action(action):
-    system = platform.system()
     try:
-        if system == "Windows":
-            os.system("shutdown /s /t 0" if action == "shutdown" else "shutdown /r /t 0")
-        elif system == "Darwin":
-            os.system("osascript -e 'tell app \"System Events\" to shut down'"
-                       if action == "shutdown" else
-                       "osascript -e 'tell app \"System Events\" to restart'")
-        else:
-            os.system("shutdown now" if action == "shutdown" else "reboot")
+        backend.shutdown_or_restart(action)
         append_chat("Jarvis: Action confirmed.\n\n")
     except Exception as e:
         append_chat(f"[ERROR] Couldn't {action}: {e}\n\n", "error")
@@ -1498,7 +1447,7 @@ def handle_memory_commands(message):
         if "=" in info:
             key, value = info.split("=", 1)
             memory[key.strip()] = value.strip()
-            save_memory(memory)
+            memory.save()
             log_action(f"Remembered {key.strip()} = {value.strip()}")
             append_chat(f"Jarvis: Saved memory -> {key.strip()} = {value.strip()}\n\n")
         else:
@@ -1517,7 +1466,7 @@ def handle_memory_commands(message):
         key = message[7:].strip()
         if key in memory:
             del memory[key]
-            save_memory(memory)
+            memory.save()
             log_action(f"Forgot {key}")
             append_chat(f"Jarvis: Forgot {key}.\n\n")
         else:
@@ -1730,7 +1679,7 @@ def show_memory():
 
 def clear_memory_confirm():
     memory.clear()
-    save_memory(memory)
+    memory.save()
     append_chat("[SYSTEM] > Memory cleared.\n\n", "system")
 
 
@@ -1752,7 +1701,7 @@ def open_settings():
 
     installed = get_installed_models()
     model_menu = ctk.CTkOptionMenu(
-        win, values=["auto"] + (installed or AVAILABLE_MODELS[1:]),
+        win, values=installed,
         command=on_model_change,
         fg_color=PANEL_ALT, button_color=CYAN_DIM)
     model_menu.set(current_model)

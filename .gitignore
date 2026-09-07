@@ -21,6 +21,8 @@ node_modules/
 # Build artifacts
 build/
 dist/
+__pycache__/
+*.pyc
 
 # Agent tooling
 .aider.chat.history.md

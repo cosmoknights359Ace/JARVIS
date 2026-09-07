@@ -443,11 +443,30 @@ def _ollama():
     return ollama
 
 
+# Shared timeout-bounded client for every local Ollama call. The module-level
+# ollama.chat()/list() helpers build a client with timeout=None, so a slow or
+# unreachable server blocks the calling thread indefinitely (this was the UI
+# freeze: Settings opening or resolve() would hang on a dead Ollama). Wrapping
+# the calls in a Client with an explicit timeout makes them fail fast so the
+# health loop / GUI can degrade gracefully to offline or cloud.
+_LOCAL_TIMEOUT = 3.0
+
+
+def _local_client(timeout=_LOCAL_TIMEOUT):
+    """Return an ollama.Client with a bounded timeout. Honours OLLAMA_HOST /
+    OLLAMA_PORT the same way the module-level client does (host=None)."""
+    ollama = _ollama()
+    try:
+        return ollama.Client(host=None, timeout=timeout)
+    except TypeError:
+        # Older ollama SDKs may not accept both kwargs together; fall back.
+        return ollama.Client(timeout=timeout)
+
+
 def local_chat_stream(model, messages, keep_alive=None, temperature=None,
                       num_predict=None):
     """Yield (piece, done_meta) tuples from a streaming Ollama chat call.
     done_meta is None until the final chunk, then {"eval_count", "eval_duration"}."""
-    ollama = _ollama()
     options = {}
     if temperature is not None:
         options["temperature"] = temperature
@@ -458,7 +477,11 @@ def local_chat_stream(model, messages, keep_alive=None, temperature=None,
         kwargs["keep_alive"] = keep_alive
     if options:
         kwargs["options"] = options
-    stream = ollama.chat(**kwargs)
+    # The httpx read timeout must be generous so a slow generation doesn't get
+    # cut off, but the *connect* phase must fail fast on a dead server. We pass
+    # the timeout as a tuple: (connect, read, write, pool).
+    client = _local_client(timeout=(_LOCAL_TIMEOUT, None, None, None))
+    stream = client.chat(**kwargs)
     for part in stream:
         piece = part.get("message", {}).get("content", "")
         meta = None
@@ -472,7 +495,6 @@ def local_chat_stream(model, messages, keep_alive=None, temperature=None,
 
 def local_vision(model, image_path, prompt, keep_alive=None, temperature=None):
     """Analyze an image via a local Ollama vision model. Returns text."""
-    ollama = _ollama()
     kwargs = {
         "model": model,
         "messages": [{
@@ -485,19 +507,28 @@ def local_vision(model, image_path, prompt, keep_alive=None, temperature=None):
         kwargs["keep_alive"] = keep_alive
     if temperature is not None:
         kwargs["options"] = {"temperature": temperature}
-    resp = ollama.chat(**kwargs)
+    client = _local_client(timeout=(_LOCAL_TIMEOUT, None, None, None))
+    resp = client.chat(**kwargs)
     return resp["message"]["content"]
+
+
+def local_vision_analyze(model, image_path, prompt,
+                         keep_alive=None, temperature=None):
+    """Public vision entry point used by the GUI. Delegates to local_vision()
+    (the streaming/timeout-bounded Ollama call) so the rest of the app has a
+    single, stable name to call regardless of provider internals."""
+    return local_vision(model, image_path, prompt,
+                        keep_alive=keep_alive, temperature=temperature)
 
 
 def local_list_models():
     """Return the set of locally installed Ollama model names."""
-    ollama = _ollama()
-    return {m.get("model") or m.get("name") for m in ollama.list().get("models", [])}
+    client = _local_client()
+    return {m.get("model") or m.get("name") for m in client.list().get("models", [])}
 
 
 def local_warm(model, keep_alive=None):
     """Send a 1-token throwaway prompt so the model is loaded in RAM/VRAM."""
-    ollama = _ollama()
     kwargs = {
         "model": model,
         "messages": [{"role": "user", "content": "hi"}],
@@ -505,7 +536,8 @@ def local_warm(model, keep_alive=None):
     }
     if keep_alive:
         kwargs["keep_alive"] = keep_alive
-    ollama.chat(**kwargs)
+    client = _local_client()
+    client.chat(**kwargs)
 
 
 # ---------------------------------------------------------------------------

@@ -155,6 +155,15 @@ class MemoryStore:
         del self.data[k]
         self.save()
 
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
+    def keys(self):
+        return self.data.keys()
+
+    def values(self):
+        return self.data.values()
+
     def clear(self):
         self.data.clear()
         self.save()
@@ -280,6 +289,69 @@ class ModelState:
 
 
 # ---------------------------------------------------------------------------
+# Request assembly + provider selection (pure, testable without Tkinter)
+# ---------------------------------------------------------------------------
+
+
+# Single source of truth for the assistant persona. The GUI used to inline this
+# string inside get_ai_response, so it couldn't be unit-tested or reused (e.g.
+# by the terminal edition) without pulling in Tkinter.
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are Jarvis, a concise personal AI assistant.\n\n"
+    "User memory:\n{memory}\n\nAnswer concisely."
+)
+
+
+def build_system_prompt(memory):
+    """Return the system prompt, injecting the memory store contents.
+
+    memory: dict-like (the MemoryStore / plain dict). Keys with empty values
+    are skipped so a fresh store yields a clean "User memory:" section.
+    """
+    if not memory:
+        memory_text = "(no memories stored yet)"
+    else:
+        memory_text = "\n".join(
+            f"{k}: {v}" for k, v in memory.items() if v and str(v).strip())
+        if not memory_text:
+            memory_text = "(no memories stored yet)"
+    return SYSTEM_PROMPT_TEMPLATE.format(memory=memory_text)
+
+
+def build_request_messages(chat_history, system_prompt, max_context):
+    """Return [system, *recent_history] capped to the last `max_context`
+    user/assistant turns so we stay within the model's context window. Pure:
+    no IO, no GUI."""
+    return [{"role": "system", "content": system_prompt}] + \
+        chat_history[-max_context:]
+
+
+def open_provider_stream(cfg, spec, messages, *,
+                         keep_alive=None, temperature=None,
+                         num_predict=None, stop_flag=None):
+    """Pick the correct backend provider for a resolved spec and return a
+    streaming iterator of (piece, done_meta) tuples. Encapsulates the
+    cloud-vs-local branch so the GUI doesn't need to know about provider
+    internals — only the backend does. Pure aside from the network call.
+
+    spec: a ModelSpec (has .is_cloud and .model).
+    """
+    if spec is not None and spec.is_cloud:
+        return providers.cloud_chat_stream(
+            cfg, spec.model, messages,
+            temperature=temperature,
+            max_tokens=None if num_predict in (None, -1) else num_predict,
+            stop_flag=stop_flag,
+        )
+    return providers.local_chat_stream(
+        spec.model, messages,
+        keep_alive=keep_alive,
+        temperature=temperature,
+        num_predict=None if num_predict in (None, -1) else num_predict,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Command handlers (pure: return text/actions, no GUI)
 # ---------------------------------------------------------------------------
 
@@ -375,3 +447,104 @@ def _try_import(name):
         return __import__(name)
     except Exception:
         return None
+
+
+# ============================================================
+# OS actions — the ONLY place in the app allowed to touch the OS shell.
+# Every call uses subprocess with a fixed argv (shell=False), so there is
+# no string interpolation into a shell and no room for command injection.
+# These are user-invoked (launch an app / a guarded shutdown) and never
+# auto-execute in response to free-form model output — that is the
+# sandbox gate from the safety constraint.
+# ============================================================
+
+import subprocess as _subprocess
+
+
+def _system():
+    return platform.system()
+
+
+def open_terminal():
+    """Open a system terminal window."""
+    sysname = _system()
+    if sysname == "Windows":
+        _subprocess.run(["cmd.exe"], shell=False)
+    elif sysname == "Darwin":
+        _subprocess.run(["open", "-a", "Terminal"], shell=False)
+    else:
+        _subprocess.run(["x-terminal-emulator"], shell=False)
+
+
+def open_path(path):
+    """Open a file or folder with the platform's default handler."""
+    sysname = _system()
+    if sysname == "Windows":
+        os.startfile(path)
+    elif sysname == "Darwin":
+        _subprocess.run(["open", path], shell=False)
+    else:
+        _subprocess.run(["xdg-open", path], shell=False)
+
+
+def open_vscode():
+    """Launch Visual Studio Code."""
+    _subprocess.run(["code"], shell=False)
+
+
+def open_edge():
+    """Launch Microsoft Edge."""
+    sysname = _system()
+    if sysname == "Windows":
+        exe = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        if not os.path.exists(exe):
+            raise RuntimeError("Edge not found at the expected Windows path.")
+        _subprocess.run([exe], shell=False)
+    elif sysname == "Darwin":
+        _subprocess.run(["open", "-a", "Microsoft Edge"], shell=False)
+    else:
+        _subprocess.run(["microsoft-edge"], shell=False)
+
+
+def open_notepad():
+    """Launch the platform's default text editor."""
+    sysname = _system()
+    if sysname == "Windows":
+        os.startfile("notepad")
+    elif sysname == "Darwin":
+        _subprocess.run(["open", "-a", "TextEdit"], shell=False)
+    else:
+        _subprocess.run(["gedit"], shell=False)
+
+
+def open_calculator():
+    """Launch the platform's calculator."""
+    sysname = _system()
+    if sysname == "Windows":
+        _subprocess.run(["calc"], shell=False)
+    elif sysname == "Darwin":
+        _subprocess.run(["open", "-a", "Calculator"], shell=False)
+    else:
+        _subprocess.run(["gnome-calculator"], shell=False)
+
+
+def open_downloads():
+    """Open the user's Downloads folder."""
+    open_path(os.path.join(os.path.expanduser("~"), "Downloads"))
+
+
+def shutdown_or_restart(action):
+    """Perform a guarded shutdown or restart. `action` is 'shutdown' or
+    'restart'. Caller is responsible for the yes/no confirmation gate."""
+    sysname = _system()
+    if sysname == "Windows":
+        flag = "/s" if action == "shutdown" else "/r"
+        _subprocess.run(["shutdown", flag, "/t", "0"], shell=False)
+    elif sysname == "Darwin":
+        verb = "shut down" if action == "shutdown" else "restart"
+        _subprocess.run(
+            ["osascript", "-e",
+             f'tell app "System Events" to {verb}'], shell=False)
+    else:
+        cmd = "shutdown" if action == "shutdown" else "reboot"
+        _subprocess.run([cmd, "now"], shell=False)
