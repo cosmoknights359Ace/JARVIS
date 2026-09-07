@@ -39,7 +39,7 @@ without a display:
 | `jarvis_backend.py` | GUI-agnostic logic: `MemoryStore`, `ChatHistory`, system-prompt building, request-message assembly. |
 | `jarvis_providers.py` | Provider abstraction for local Ollama and (optional) cloud models. All network/model inference goes through here — no shell exec, no autonomous actions. |
 | `jarvis.py` | Headless (terminal) edition that shares `memory.json` / `chat_history.json` with the GUI. |
-| `config.toml` | Optional config for a cloud LLM router. **Contains a private API key and is git-ignored — never commit it.** |
+| `config.toml` | Optional config for a cloud LLM router (only used for non-Ollama providers). Git-ignored by default — **keep any secrets local and never commit them.** |
 | `run_venv.ps1` | Launcher that runs a script under the project's `win-venv` and (by default) starts the Ollama server if it isn't already up. |
 | `build_exe.bat` | Builds `dist\JARVIS.exe` with PyInstaller (onefile, windowed, custom icon). |
 | `tests/` | Pytest suite for the backend (e.g. `tests/test_backend_fix2.py`). |
