@@ -176,6 +176,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog
 from urllib.parse import quote_plus
+from tkinter import font as tkfont
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw
@@ -183,6 +184,46 @@ import pyttsx3
 import pyautogui
 import psutil
 import speech_recognition as sr
+
+# Clipboard helper — pyperclip is handy but not a project dependency, so fall
+# back to the Tkinter clipboard (which is always available) if it's missing.
+try:
+    import pyperclip
+    _HAVE_PYPERCLIP = True
+except Exception:
+    pyperclip = None
+    _HAVE_PYPERCLIP = False
+
+
+def copy_to_clipboard(text):
+    if _HAVE_PYPERCLIP:
+        try:
+            pyperclip.copy(text)
+            return
+        except Exception:
+            pass
+    # Fallback: Tkinter clipboard (needs the app to exist, which it always
+    # does by the time the user can click anything).
+    app.clipboard_clear()
+    app.clipboard_append(text)
+
+
+def _resolve_fonts():
+    """Pick safe font families. The HUD theme calls for Orbitron / Rajdhani /
+    JetBrains Mono, but those aren't installed by default on Windows (or the
+    box running this) and would silently fall back to Tk's ugly default. We
+    probe the available families and substitute a close, always-present face
+    when a preferred one is missing, so the UI looks intentional everywhere.
+    """
+    try:
+        available = set(tkfont.families())
+    except Exception:
+        available = set()
+    # Preferred -> fallback chain (most->least "branded" but always present).
+    display = "Orbitron" if "Orbitron" in available else "Segoe UI"
+    text = "Rajdhani" if "Rajdhani" in available else "Segoe UI"
+    mono = "JetBrains Mono" if "JetBrains Mono" in available else "Consolas"
+    return display, text, mono
 
 # Backend (model state, routing, memory) + provider layer (local Ollama and
 # any OpenAI-compatible cloud endpoint). The GUI used to talk to Ollama
@@ -356,6 +397,28 @@ app.geometry("1180x780")
 app.minsize(900, 600)
 app.configure(fg_color=VOID)
 
+# Resolve font families now that the Tk root exists. The HUD theme references
+# Orbitron / Rajdhani / JetBrains Mono, which usually aren't installed; fall
+# back to Segoe UI / Consolas so the UI never renders in the ugly default face.
+_F_DISPLAY, _F_TEXT, _F_MONO = _resolve_fonts()
+FONT_DISPLAY = (_F_DISPLAY, 32, "bold")
+FONT_SUB = (_F_TEXT, 15)
+FONT_NAV = (_F_TEXT, 16, "bold")
+FONT_MONO = (_F_MONO, 14)
+FONT_MONO_SM = (_F_MONO, 12)
+
+# Runtime font resolver used by the inline tuples throughout the file. It maps
+# one of the preferred branded families to the resolved (possibly fallback)
+# family, so a missing "Rajdhani" automatically becomes "Segoe UI" everywhere.
+def _F(family, *rest):
+    if family == "Orbitron":
+        return (_F_DISPLAY, *rest)
+    if family == "Rajdhani":
+        return (_F_TEXT, *rest)
+    if family == "JetBrains Mono":
+        return (_F_MONO, *rest)
+    return (family, *rest)
+
 # 2-column grid: sidebar | content. Content splits into rows.
 app.grid_columnconfigure(1, weight=1)
 app.grid_rowconfigure(0, weight=1)
@@ -370,14 +433,14 @@ sidebar = ctk.CTkFrame(app, width=250, fg_color=PANEL, corner_radius=0,
 sidebar.grid(row=0, column=0, sticky="nsw")
 sidebar.grid_propagate(False)
 
-ctk.CTkLabel(sidebar, text="J.A.R.V.I.S", font=("Rajdhani", 22, "bold"),
+ctk.CTkLabel(sidebar, text="J.A.R.V.I.S", font=_F("Rajdhani", 22, "bold"),
              text_color=AMBER).pack(pady=(18, 0), padx=18, anchor="w")
 ctk.CTkLabel(sidebar, text="JUST A RATHER VERY INTELLIGENT SYSTEM",
-             font=("Rajdhani", 9),
+             font=_F("Rajdhani", 9),
              text_color=TEXT_DIM).pack(pady=(0, 14), padx=18, anchor="w")
 
 new_chat_button = ctk.CTkButton(
-    sidebar, text="＋  New chat", font=("Rajdhani", 15, "bold"), anchor="w",
+    sidebar, text="＋  New chat", font=_F("Rajdhani", 15, "bold"), anchor="w",
     height=42, corner_radius=21, fg_color=PANEL_ALT, hover_color=CYAN_DIM,
     text_color=TEXT_MAIN, command=lambda: cmd_new_chat("", from_pill=True))
 new_chat_button.pack(fill="x", padx=14, pady=(0, 14))
@@ -389,7 +452,7 @@ def make_nav_button(key, label, command, at_bottom=False, icon=""):
     """HUD-style nav row: icon, label, chevron — thin amber border."""
     text = f"{icon}  {label.upper()}  ›" if icon else f"{label.upper()}  ›"
     btn = ctk.CTkButton(
-        sidebar, text=text, font=("Rajdhani", 14, "bold"), anchor="w",
+        sidebar, text=text, font=_F("Rajdhani", 14, "bold"), anchor="w",
         fg_color="transparent", hover_color=CYAN_DIM,
         text_color=TEXT_DIM, corner_radius=6, height=40,
         border_width=1, border_color=CYAN_DIM,
@@ -413,7 +476,7 @@ def set_active_nav(key):
 
 # --- Recent (previous prompts, click to re-send) --------------
 
-ctk.CTkLabel(sidebar, text="Recent", font=("Rajdhani", 13, "bold"),
+ctk.CTkLabel(sidebar, text="Recent", font=_F("Rajdhani", 13, "bold"),
              text_color=TEXT_DIM).pack(anchor="w", padx=16, pady=(12, 2))
 recent_list_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
 recent_list_frame.pack(fill="x", padx=6)
@@ -424,20 +487,20 @@ status_panel = ctk.CTkFrame(sidebar, fg_color="transparent",
                             corner_radius=6)
 status_panel.pack(fill="x", padx=10, pady=(16, 6))
 ctk.CTkLabel(status_panel, text="SYSTEM STATUS",
-             font=("Rajdhani", 11, "bold"),
+             font=_F("Rajdhani", 11, "bold"),
              text_color=AMBER).pack(anchor="w", padx=10, pady=(8, 4))
 
 _bars = {}
 for _name in ("CPU", "RAM", "NET"):
     row = ctk.CTkFrame(status_panel, fg_color="transparent")
     row.pack(fill="x", padx=10, pady=2)
-    ctk.CTkLabel(row, text=_name, font=("Rajdhani", 10),
+    ctk.CTkLabel(row, text=_name, font=_F("Rajdhani", 10),
                  text_color=TEXT_DIM, width=32, anchor="w").pack(side="left")
     bar = ctk.CTkProgressBar(row, height=6, corner_radius=2,
                              fg_color=PANEL_ALT, progress_color=AMBER)
     bar.set(0)
     bar.pack(side="left", fill="x", expand=True, padx=(4, 0))
-    pct = ctk.CTkLabel(row, text="0%", font=("Rajdhani", 10),
+    pct = ctk.CTkLabel(row, text="0%", font=_F("Rajdhani", 10),
                        text_color=TEXT_DIM, width=36)
     pct.pack(side="left")
     _bars[_name] = (bar, pct)
@@ -479,13 +542,13 @@ def refresh_recent():
                if m.get("role") == "user"][-8:]
     if not recents:
         ctk.CTkLabel(recent_list_frame, text="  (nothing yet)",
-                     font=("Rajdhani", 12),
+                     font=_F("Rajdhani", 12),
                      text_color=TEXT_DIM).pack(anchor="w")
         return
     for msg in reversed(recents):
         short = (msg[:30] + "…") if len(msg) > 30 else msg
         b = ctk.CTkButton(
-            recent_list_frame, text=short, font=("Rajdhani", 13), anchor="w",
+            recent_list_frame, text=short, font=_F("Rajdhani", 13), anchor="w",
             height=30, fg_color="transparent", hover_color=PANEL_ALT,
             text_color=TEXT_DIM, corner_radius=8,
             command=lambda m=msg: _reuse_recent(m))
@@ -548,6 +611,173 @@ chat_box.tag_config("code", foreground=AMBER, justify="left", lmargin1=24,
 chat_box.tag_config("boot", foreground=CYAN, justify="left", lmargin1=16,
                      lmargin2=16, spacing1=2, spacing3=2)
 
+
+def _line_range_at(index):
+    """Return (start_idx, end_idx) for the full line containing `index`."""
+    line = int(index.split(".")[0])
+    return f"{line}.0", f"{line}.end"
+
+
+def _copy_code_block_at(event):
+    """Copy the entire ``` fenced block that the pointer is over (falling back
+    to the whole line if there's no fence). Used by the right-click menu."""
+    idx = chat_box.index(f"@{event.x},{event.y}")
+    _copy_code_block(idx)
+
+
+def _copy_code_block(idx):
+    """Find the ``` ... ``` fence around `idx` and copy its inner content.
+    If no enclosing fence exists, fall back to copying just the line under
+    the pointer (so a stray right-click on a non-code line never copies a
+    huge slab of unrelated chat)."""
+    total = int(chat_box.index("end-1c").split(".")[0])
+    cur = int(idx.split(".")[0])
+    # Opening fence: nearest ``` at or above cur (0 if none).
+    open_line = None
+    line = cur
+    while line >= 1:
+        if "```" in chat_box.get(f"{line}.0", f"{line}.end"):
+            open_line = line
+            break
+        line -= 1
+    # Closing fence: nearest ``` strictly below the opening one.
+    close_line = None
+    if open_line is not None:
+        line = open_line + 1
+        while line <= total:
+            if "```" in chat_box.get(f"{line}.0", f"{line}.end"):
+                close_line = line
+                break
+            line += 1
+    if open_line is not None and close_line is not None and open_line < close_line:
+        block = chat_box.get(f"{open_line + 1}.0", f"{close_line - 1}.0 + 1c")
+    else:
+        a, b = _line_range_at(idx)
+        block = chat_box.get(a, b)
+    copy_to_clipboard(block.strip())
+    set_status("Copied code block to clipboard")
+
+
+def _on_chat_double_click(event):
+    """Double-click behaviour: regenerate if the line is a JARVIS message
+    (meta or body), otherwise copy the code block under the pointer."""
+    idx = chat_box.index(f"@{event.x},{event.y}")
+    line = chat_box.get(f"{idx.split('.')[0]}.0", f"{idx.split('.')[0]}.end")
+    tags = chat_box.tag_names(idx)
+    if "jarvis" in tags or "jarvis_meta" in tags:
+        if _last_user_message and not _ai_busy:
+            regenerate_last()
+        return
+    if "code" in tags or "```" in line:
+        _copy_code_block(idx)
+
+
+# --- lightweight markdown rendering -------------------------------------
+# The HUD chat only needs a few affordances: bold headings/words, bullet
+# lists, and a distinct "kbd" style for things the user must type. Rendering
+# is synchronous (called only from command handlers on the GUI thread, never
+# from the streaming worker), so we insert directly and trim in one place
+# instead of via app.after — mixing the two would scramble line order.
+# NOTE: CTkTextbox.tag_config forbids the `font` option (it owns font scaling),
+# so textual hierarchy here is expressed via colour + spacing rather than weight
+# / size. Bold is conveyed by a bright foreground; headings by amber/cyan + gap.
+chat_box.tag_config("md_h1", foreground=AMBER,
+                     lmargin1=16, lmargin2=16, spacing1=8, spacing3=4)
+chat_box.tag_config("md_h2", foreground=CYAN,
+                     lmargin1=16, lmargin2=16, spacing1=6, spacing3=2)
+chat_box.tag_config("md_bold", foreground="#F2F2F2")
+chat_box.tag_config("md_bullet", foreground=GREEN, lmargin1=28, lmargin2=40,
+                     spacing1=2, spacing3=2)
+chat_box.tag_config("md_kbd", foreground=VOID, background=CYAN_DIM,
+                     lmargin1=16, lmargin2=16)
+
+
+def _md_trim():
+    """Keep the chat log bounded; same rule as append_chat()."""
+    line_count = int(chat_box.index("end-1c").split(".")[0])
+    if line_count > MAX_CHATBOX_LINES:
+        chat_box.delete("1.0", f"{line_count - MAX_CHATBOX_LINES}.0")
+    chat_box.see("end")
+
+
+def append_markdown(text, tag="system"):
+    """Render a small subset of markdown into the chat log. Supports:
+    `# heading` / `## sub-heading`, `- bullet` lists, `**bold**`, and
+    inline `kbd` (backtick) spans. Everything else is rendered as plain text
+    in the supplied base tag. Only used for command/system output."""
+    import re as _re
+    lines = text.split("\n")
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            chat_box.insert("end", "\n", tag)
+            continue
+        if line.startswith("## "):
+            chat_box.insert("end", line[3:] + "\n", "md_h2")
+            continue
+        if line.startswith("# "):
+            chat_box.insert("end", line[2:] + "\n", "md_h1")
+            continue
+        if _re.match(r"^\s*[-*]\s+", line):
+            body = _re.sub(r"^\s*[-*]\s+", "", line)
+            chat_box.insert("end", "•  ", "md_bullet")
+            _append_md_inline(body, "md_bullet")
+            chat_box.insert("end", "\n", "md_bullet")
+            continue
+        _append_md_inline(line, tag)
+        chat_box.insert("end", "\n", tag)
+    _md_trim()
+
+
+def _append_md_inline(text, base_tag):
+    """Render **bold** and `kbd` spans on a single line, falling back to the
+    base tag for the rest."""
+    import re as _re
+    # Order matters: split on both markers so they don't eat each other.
+    parts = _re.split(r"(\*\*[^*]+\*\*|`[^`]+`)", text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            chat_box.insert("end", part[2:-2], "md_bold")
+        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+            chat_box.insert("end", part[1:-1], "md_kbd")
+        else:
+            chat_box.insert("end", part, base_tag)
+
+
+# --- right-click context menu on the chat log (#1) ----------------------
+def _chat_context_menu(event):
+    """Popup with copy actions. Selection copies the highlighted text; if
+    nothing is selected, it copies the last AI reply."""
+    try:
+        sel = chat_box.selection_get()
+    except Exception:
+        sel = ""
+    menu = tk.Menu(app, tearoff=0, bg=PANEL, fg=TEXT_MAIN,
+                   activebackground=CYAN_DIM, activeforeground=TEXT_MAIN)
+    if sel:
+        menu.add_command(label="📋  Copy selection",
+                         command=lambda: copy_to_clipboard(sel))
+        menu.add_separator()
+    menu.add_command(label="📋  Copy last reply",
+                     command=copy_last_response)
+    if _last_user_message:
+        menu.add_command(
+            label="🔁  Regenerate last reply",
+            command=lambda: regenerate_last())
+    if sel:
+        # Copy + double-click the code block this selection sits in.
+        menu.add_separator()
+        menu.add_command(label="⧉  Copy code block",
+                         command=lambda: _copy_code_block_at(event))
+    chat_box.after(0, lambda: menu.tk_popup(event.x_root, event.y_root))
+
+
+# The chat-log interaction handlers are all defined now, so wire them up.
+chat_box.bind("<Button-3>", _chat_context_menu)
+chat_box.bind("<Double-1>", _on_chat_double_click)
+
 # --- empty-chat HUD panel (replaces the old floating orb) ---
 _hud_panel = None
 
@@ -574,7 +804,7 @@ def _build_hud_panel():
                          border_width=1, border_color=AMBER,
                          corner_radius=8)
     ctk.CTkLabel(panel, text="How can I help you, Sir?",
-                 font=("Rajdhani", 22),
+                 font=_F("Rajdhani", 22),
                  text_color=TEXT_MAIN).pack(pady=(18, 12), padx=40)
     row = ctk.CTkFrame(panel, fg_color="transparent")
     row.pack(pady=(6, 18), padx=16)
@@ -587,7 +817,7 @@ def _build_hud_panel():
                             hover_color=CYAN_DIM, text_color=GREEN,
                             font=("Consolas", 18), command=cmd)
         btn.pack(padx=2, pady=2)
-        ctk.CTkLabel(cell, text=label, font=("Rajdhani", 9),
+        ctk.CTkLabel(cell, text=label, font=_F("Rajdhani", 9),
                      text_color=TEXT_DIM).pack()
         ToolTip(btn, label.title())
     _hud_panel = panel
@@ -639,7 +869,7 @@ class ToolTip:
         tip = tk.Toplevel(self.widget)
         tip.wm_overrideredirect(True)
         tip.configure(bg=PANEL_ALT)
-        ctk.CTkLabel(tip, text=self.text, font=("Rajdhani", 12),
+        ctk.CTkLabel(tip, text=self.text, font=_F("Rajdhani", 12),
                      fg_color=PANEL_ALT, corner_radius=6,
                      text_color=TEXT_MAIN, padx=10, pady=3).pack()
         tip.update_idletasks()
@@ -663,7 +893,7 @@ status_label = ctk.CTkLabel(content, text="Ready", font=FONT_MONO_SM,
                              text_color=TEXT_DIM)
 status_label.grid(row=2, column=0, sticky="w", padx=24, pady=(0, 2))
 ctk.CTkLabel(content, text="JARVIS STATUS\nALL SYSTEMS OPERATIONAL",
-              font=("Rajdhani", 10, "bold"), text_color=GREEN,
+              font=_F("Rajdhani", 10, "bold"), text_color=GREEN,
               justify="right").grid(row=2, column=0, sticky="e", padx=24,
                                      pady=(0, 2))
 
@@ -706,7 +936,7 @@ entry = ctk.CTkEntry(bottom, placeholder_text="How can I help you, Sir?",
                       height=44, corner_radius=4, border_width=0,
                       fg_color="transparent",
                       text_color=TEXT_MAIN, placeholder_text_color=TEXT_DIM,
-                      font=("Rajdhani", 16))
+                      font=_F("Rajdhani", 16))
 entry.grid(row=0, column=1, sticky="ew", pady=6)
 
 
@@ -730,7 +960,7 @@ _model_choices = model_state.menu_choices()
 model_selector = ctk.CTkOptionMenu(
     bottom, values=_model_choices, width=132, height=36,
     corner_radius=18, fg_color=PANEL_ALT, button_color=CYAN_DIM,
-    text_color=TEXT_MAIN, font=("Rajdhani", 13),
+    text_color=TEXT_MAIN, font=_F("Rajdhani", 13),
     command=set_current_model)
 model_selector.grid(row=0, column=2, padx=(4, 2), pady=8)
 model_selector.set(current_model)
@@ -847,14 +1077,23 @@ def stop_generation():
 
 
 def _set_generating_ui(active):
-    def _do():
-        if active:
-            send_button.configure(text="■", command=stop_generation,
-                                   fg_color=RED, hover_color="#B3364C")
-        else:
-            send_button.configure(text="➤", command=send_message,
-                                   fg_color=PANEL_ALT, hover_color=CYAN_DIM)
-    app.after(0, _do)
+    app.after(0, _refresh_send_button)
+
+
+def _refresh_send_button():
+    """Single source of truth for the send button's look. While a reply is
+    streaming it's a red Stop (■). When idle it's the send arrow (➤), but if
+    Ollama is offline we tint it amber/red so the user gets a quick, obvious
+    "you can't send right now" affordance without opening Settings."""
+    if _ai_busy:
+        send_button.configure(text="■", command=stop_generation,
+                               fg_color=RED, hover_color="#B3364C")
+    elif _ollama_online:
+        send_button.configure(text="➤", command=send_message,
+                               fg_color=PANEL_ALT, hover_color=CYAN_DIM)
+    else:
+        send_button.configure(text="⚠", command=send_message,
+                               fg_color="#7A4A12", hover_color="#9A5E18")
 
 
 def _stream_insert(piece, in_code):
@@ -1018,8 +1257,7 @@ def copy_last_response():
     if not _last_assistant_reply:
         set_status("Nothing to copy yet")
         return
-    app.clipboard_clear()
-    app.clipboard_append(_last_assistant_reply)
+    copy_to_clipboard(_last_assistant_reply)
     set_status("Copied last response to clipboard")
 
 
@@ -1262,15 +1500,29 @@ Tips:
 # ============================================================
 
 def cmd_help(_msg):
-    append_chat(HELP_TEXT)
+    append_markdown(_help_as_markdown())
+
+
+def _help_as_markdown():
+    """Convert the flat HELP_TEXT into the small markdown subset our renderer
+    supports: section headers (`Word:`) become `## `, bullets stay as `- `."""
+    import re as _re
+    out = []
+    for line in HELP_TEXT.split("\n"):
+        stripped = line.strip()
+        if _re.match(r"^[\w /]+:$", stripped) and len(stripped) < 30:
+            out.append(f"## {stripped[:-1]}")
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def cmd_show_memory(_msg):
     if memory:
-        append_chat("Jarvis Memory:\n")
+        append_markdown("## Jarvis Memory\n")
         for k, v in memory.items():
-            append_chat(f"{k} = {v}\n")
-        append_chat("\n")
+            append_markdown(f"- **{k}** = `{v}`")
+        append_markdown("")
     else:
         append_chat("Jarvis: Memory is empty.\n\n", "error")
 
@@ -1558,6 +1810,11 @@ app.bind("<Control-l>", lambda e: chat_box.delete("1.0", "end"))
 app.bind("<Control-e>", lambda e: export_chat())
 app.bind("<Control-m>", lambda e: toggle_voice())
 app.bind("<Control-q>", lambda e: app.destroy())
+# Esc stops a streaming reply; Ctrl+R regenerates the last one. (#2)
+app.bind("<Escape>", lambda e: stop_generation() if _ai_busy else None)
+app.bind("<Control-r>", lambda e: (regenerate_last()
+                                   if _last_user_message and not _ai_busy
+                                   else None))
 
 
 # ============================================================
@@ -1668,13 +1925,13 @@ def show_vision():
 
 def show_memory():
     set_active_nav("memory")
-    append_chat("\n========== MEMORY ==========\n", "system")
+    append_markdown("## Memory\n")
     if memory:
         for k, v in memory.items():
-            append_chat(f"{k} : {v}\n", "jarvis")
+            append_markdown(f"- **{k}** = `{v}`")
     else:
         append_chat("No memory stored.\n", "error")
-    append_chat("\n")
+    append_markdown("")
 
 
 def clear_memory_confirm():
@@ -1690,7 +1947,7 @@ def open_settings():
     win.geometry("400x760")
     win.configure(fg_color=VOID)
 
-    ctk.CTkLabel(win, text="SETTINGS", font=("Rajdhani", 20, "bold"),
+    ctk.CTkLabel(win, text="SETTINGS", font=_F("Rajdhani", 20, "bold"),
                  text_color=CYAN).pack(pady=(20, 10))
 
     ctk.CTkLabel(win, text="Model", font=FONT_SUB, text_color=TEXT_DIM
@@ -1819,6 +2076,8 @@ def update_clock():
     )
     status_dot.configure(text_color=GREEN if _ollama_online else RED)
     update_status_bars()
+    # Keep the send-button offline tint in sync with the live connectivity flag.
+    _refresh_send_button()
     app.after(1000, update_clock)
 
 
@@ -1845,7 +2104,7 @@ make_nav_button("settings", "Settings", open_settings, at_bottom=True, icon="◈
 # User card pinned under Settings (HUD touch from the reference)
 _user_name = memory.get("name") or memory.get("my name") or "USER"
 ctk.CTkLabel(sidebar, text=f"USER: {str(_user_name).upper()} · CLEARANCE: LEVEL 7",
-             font=("Rajdhani", 10), text_color=AMBER
+             font=_F("Rajdhani", 10), text_color=AMBER
              ).pack(side="bottom", padx=12, pady=(4, 12))
 
 
