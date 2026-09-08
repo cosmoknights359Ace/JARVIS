@@ -175,5 +175,11 @@ win-venv\Scripts\python.exe -m pytest tests/ -q
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**MIT — with a required attribution.** Free to use, study, modify, and redistribute,
+provided the creator credit **"J.A.R.V.I.S — (c) 2026 vinod"** is retained in the
+software, its documentation, and any redistributed or derivative copies. Removing or
+obscuring that credit is not permitted. Full text: [LICENSE](LICENSE).
+
+This requirement is reinforced in code by [`attribution.py`](attribution.py), which
+re-assembles and re-stamps the credit on every run.
 

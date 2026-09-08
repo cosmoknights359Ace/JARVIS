@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 cosmoknights359Ace
+Copyright (c) 2026 vinod
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11,6 +11,15 @@ furnished to do so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
+Attribution requirement (reinforcing the notice above)
+------------------------------------------------------
+This project is shared under a permissive, attribution-style license: anyone
+may use, study, modify, and redistribute it, provided the original creator
+credit ("J.A.R.V.I.S - (c) 2026 vinod") is retained in the software, its
+documentation, and any redistributed or derivative copies. Removing or
+obscuring that credit is NOT permitted. The `attribution.py` module embeds this
+notice and re-asserts it on every run; stripping it breaks the license grant.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
