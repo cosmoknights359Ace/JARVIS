@@ -21,6 +21,7 @@ import socket
 import tomllib
 import urllib.request
 from urllib.parse import urlsplit
+import attribution as attr  # attribution / anti-tamper registry
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "config.toml")
@@ -163,6 +164,11 @@ DEFAULT_LOCAL_MODELS = {
     "qwen2.5-coder:7b": "coding",
 }
 DEFAULT_VISION_MODEL = "llama3.2-vision:latest"
+
+# Attribution: every time this inference layer is imported, re-stamp the
+# creator credit into the log. This keeps the notice alive from a module that
+# is loaded before any UI code, so even a stripped-down build still asserts it.
+attr.stamp_log(os.path.join(APP_DIR, "jarvis.log"))
 
 # Canonical aliases -> ids of whatever specs are registered (local or cloud).
 DEFAULT_AUTO_ROUTES = {"general": "qwen2.5:3b", "coding": "qwen2.5-coder:7b"}

@@ -267,6 +267,7 @@ def _resolve_fonts():
 # single source of truth and the whole core is unit-testable.
 import jarvis_backend as backend
 import jarvis_providers as providers
+import attribution as attr  # attribution / anti-tamper registry
 
 # ============================================================
 # Paths / persistence
@@ -450,7 +451,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
 
 app = ctk.CTk()
-app.title("J.A.R.V.I.S")
+app.title(f"J.A.R.V.I.S  \u2014  {attr.get_short()}")
 app.geometry("1180x780")
 app.minsize(900, 600)
 app.configure(fg_color=VOID)
@@ -864,6 +865,9 @@ def _build_hud_panel():
     ctk.CTkLabel(panel, text="How can I help you, Sir?",
                  font=_F("Rajdhani", 22),
                  text_color=TEXT_MAIN).pack(pady=(18, 12), padx=40)
+    ctk.CTkLabel(panel, text=attr.get_short(),
+                 font=_F("Rajdhani", 9),
+                 text_color=TEXT_DIM).pack(pady=(0, 14), padx=40)
     row = ctk.CTkFrame(panel, fg_color="transparent")
     row.pack(pady=(6, 18), padx=16)
     for icon, label, cmd in QUICK_ACTIONS:
@@ -1574,7 +1578,16 @@ Tips:
 - Model, vision model, temperature, response length, and keep-alive
   time are all adjustable from Settings.
 
-"""
+{notice_footer}
+
+""".format(notice_footer=(
+    "Credits:\n"
+    "- " + "  ---  ".join([
+        "J.A.R.V.I.S personal AI desktop assistant, authored by vinod (c) 2026.",
+        "Free to use, modify, and redistribute \u2014 as long as this creator "
+        "credit is kept. Removing the attribution is not permitted.",
+    ])
+))
 
 
 # ============================================================
@@ -1730,6 +1743,8 @@ def export_chat(_msg=None):
             lines.append(f"{speaker}: {msg.get('content', '')}")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n\n".join(lines))
+            f.write(f"\n\n---\n*Exported from {attr.get_short()}. "
+                    f"Free to share \u2014 please keep this attribution.*\n")
         append_chat(f"[SYSTEM] > Exported chat to {path}\n\n", "system")
     except OSError as e:
         append_chat(f"[ERROR] Couldn't export chat: {e}\n\n", "error")
@@ -2061,7 +2076,7 @@ def clear_memory_confirm():
 def open_settings():
     set_active_nav("settings")
     win = ctk.CTkToplevel(app)
-    win.title("Jarvis Settings")
+    win.title(f"Jarvis Settings  \u2014  {attr.get_short()}")
     win.geometry("400x760")
     win.configure(fg_color=VOID)
 
@@ -2227,6 +2242,15 @@ ctk.CTkLabel(sidebar, text=f"USER: {str(_user_name).upper()} · CLEARANCE: LEVEL
 
 
 if __name__ == "__main__":
+    # Attribution: re-stamp the notice into the log every boot. If the
+    # attribution has been tampered with, surface a warning but keep running.
+    attr.stamp_log(LOG_FILE)
+    if not attr.integrity_ok():
+        try:
+            log_action("[TAMPER] attribution notice appears to have been "
+                       "altered or removed \u2014 license fingerprint mismatch")
+        except NameError:
+            pass
     set_active_nav("home")
     boot_sequence()
     # Boot animation takes ~14 lines * 220ms; replay saved history right after,

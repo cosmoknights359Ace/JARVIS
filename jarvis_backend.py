@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 
 import jarvis_providers as providers
+import attribution as attr  # attribution / anti-tamper registry
 
 # ---------------------------------------------------------------------------
 # Constants (moved from jarvis_gui so tests can import without Tk)
@@ -75,7 +76,12 @@ Composer:
 - Enter          send
 - Shift+Enter    newline
 - Esc            clear the composer
-"""
+
+Credits:
+- {short}
+- Free to use, modify, and redistribute — as long as this creator credit is kept.
+  Removing the attribution is not permitted. See README.md for license terms.
+""".format(short=attr.get_short())
 
 
 # ---------------------------------------------------------------------------

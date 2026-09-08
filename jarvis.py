@@ -37,6 +37,7 @@ except ImportError:
     pass  # Windows: history still works via pip install pyreadline3
 
 import ollama
+import attribution as attr  # attribution / anti-tamper registry
 
 MEMORY_FILE = "memory.json"
 HISTORY_FILE = "chat_history.json"
@@ -333,10 +334,18 @@ def handle_command(message):
 
 
 def main():
+    # Attribution: re-stamp the notice into the log every boot. If the credit
+    # has been removed, surface a warning but keep running.
+    attr.stamp_log("jarvis.log")
+    if not attr.integrity_ok():
+        print(f"{AMBER}[ATTRIBUTION] creator credit missing or altered \u2014 "
+              f"see license terms.{RESET}")
     print(f"""{CYAN}
      ╔══════════════════════════════════╗
        J.A.R.V.I.S — terminal edition
      ╚══════════════════════════════════╝{RESET}""")
+    print(f"{DIM}{attr.get_short()}{RESET}")
+    print(f"{DIM}Free to use & modify — keep this credit on reuse.{RESET}")
     check_models()
     threading.Thread(target=warm_models, daemon=True).start()
     print(f"{DIM}Type 'help' for commands, 'exit' to quit.{RESET}\n")
