@@ -1,5 +1,7 @@
 # J.A.R.V.I.S — Desktop AI Assistant
 
+NOTE-THIS PROJECT IS CURRENTLY UNDER DEVELOPMENT
+
 **J.A.R.V.I.S** is a personal, voice-enabled **desktop AI assistant for Windows**, powered by
 **local LLMs via [Ollama](https://ollama.com)**. It has a dark, Iron-Man–styled
 ("JARVIS HUD") GUI built with [`customtkinter`](https://github.com/TomSchimansky/CustomTkinter)
