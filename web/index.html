@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>J.A.R.V.I.S</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ============ TOP BAR ============ -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand-mini">J.A.R.V.I.S</span>
+    </div>
+    <div class="topbar-right">
+      <button id="muteBtn" class="icon-btn" title="Toggle speaker" aria-label="Toggle speaker">
+        <span id="muteIcon">🔊</span>
+      </button>
+      <span class="status-online"><span class="dot dot-green"></span>ONLINE</span>
+      <span class="sep">·</span>
+      <span id="clock">00:00:00</span>
+      <span class="sep">·</span>
+      <span>AUTO</span>
+      <span class="sep">·</span>
+      <span>CPU <span id="topCpu">4</span>%</span>
+      <span class="sep">·</span>
+      <span>RAM <span id="topRam">76</span>%</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>J.A.R.V.I.S</h1>
+        <p class="subtitle">JUST A RATHER VERY INTELLIGENT SYSTEM</p>
+      </div>
+
+      <button id="newChatBtn" class="new-chat">+ New chat</button>
+
+      <div class="recent">
+        <div class="section-label">RECENT</div>
+        <ul id="recentList" class="recent-list"></ul>
+      </div>
+
+      <div class="core-panel">
+        <div class="section-label">J.A.R.V.I.S CORE</div>
+        <div class="bar-row">
+          <span class="bar-name">CPU</span>
+          <div class="bar-track"><div id="cpuBar" class="bar-fill" style="width:0%"></div></div>
+          <span id="cpuPct" class="bar-pct">0%</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-name">RAM</span>
+          <div class="bar-track"><div id="ramBar" class="bar-fill" style="width:76%"></div></div>
+          <span id="ramPct" class="bar-pct">76%</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a class="nav-item" data-view="HOME" href="#"><span class="diamond">◆</span> HOME <span class="chev">›</span></a>
+        <a class="nav-item active" data-view="CHAT" href="#"><span class="diamond">◆</span> CHAT <span class="chev">›</span></a>
+        <a class="nav-item" data-view="VISION" href="#"><span class="diamond">◆</span> VISION <span class="chev">›</span></a>
+        <a class="nav-item" data-view="MEMORY" href="#"><span class="diamond">◆</span> MEMORY <span class="chev">›</span></a>
+        <a class="nav-item" data-view="SETTINGS" href="#"><span class="diamond">◆</span> SETTINGS <span class="chev">›</span></a>
+      </nav>
+
+      <div class="user-card">USER: USER · CLEARANCE: LEVEL 7</div>
+    </aside>
+
+    <!-- ============ MAIN CHAT ============ -->
+    <main class="main">
+      <!-- View: CHAT -->
+      <section class="view view-chat active" id="view-CHAT">
+        <div class="chat-scroll" id="chatScroll">
+          <div class="msg assist">
+            <div class="msg-head">J.A.R.V.I.S · <span class="ts"></span></div>
+            <div class="msg-body">
+              <p>Online and at your service, Sir. How can I help you today?</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="status-line">
+          <span id="readyStatus">Ready</span>
+          <span class="jarvis-status">JARVIS STATUS<br />ALL SYSTEMS OPERATIONAL</span>
+        </div>
+
+        <div class="input-bar">
+          <button class="icon-btn" title="Attach" aria-label="Attach">+</button>
+          <input id="chatInput" class="chat-input" type="text" placeholder="How can I help you, Sir?" autocomplete="off" />
+          <div class="mode-pill">auto <span class="chev">⌄</span></div>
+          <button class="icon-btn" title="Tools" aria-label="Tools">⚙</button>
+          <button id="sendBtn" class="icon-btn send" title="Send" aria-label="Send">➤</button>
+        </div>
+      </section>
+
+      <!-- View: HOME -->
+      <section class="view" id="view-HOME">
+        <div class="placeholder">
+          <h2>HOME</h2>
+          <p>System overview and quick actions will appear here.</p>
+        </div>
+      </section>
+
+      <!-- View: VISION -->
+      <section class="view" id="view-VISION">
+        <div class="placeholder">
+          <h2>VISION</h2>
+          <p>Image analysis module. Select a frame or upload an image to begin.</p>
+        </div>
+      </section>
+
+      <!-- View: MEMORY -->
+      <section class="view" id="view-MEMORY">
+        <div class="placeholder">
+          <h2>MEMORY</h2>
+          <p>Stored facts, notes, and conversation context.</p>
+        </div>
+      </section>
+
+      <!-- View: SETTINGS -->
+      <section class="view" id="view-SETTINGS">
+        <div class="placeholder">
+          <h2>SETTINGS</h2>
+          <p>Model, voice, and appearance preferences.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
