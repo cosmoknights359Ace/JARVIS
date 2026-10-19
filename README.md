@@ -1,12 +1,7 @@
-# J.A.R.V.I.S — Desktop AI Assistant
+# J.A.R.V.I.S — Web & Desktop AI Assistant (React + TypeScript)
 
-NOTE-THIS PROJECT IS CURRENTLY UNDER DEVELOPMENT
-
-**J.A.R.V.I.S** is a personal, voice-enabled **desktop AI assistant for Windows**, powered by
-**local LLMs via [Ollama](https://ollama.com)**. It has a dark, Iron-Man–styled
-("JARVIS HUD") GUI built with [`customtkinter`](https://github.com/TomSchimansky/CustomTkinter)
-and runs **fully offline** — the models are downloaded and executed locally, so no
-prompt or data ever has to leave your machine.
+**J.A.R.V.I.S** is a personal, voice-enabled AI assistant inspired by Tony Stark's iconic J.A.R.V.I.S HUD.
+Rewritten as a high-performance **React + TypeScript SPA with Vite**, featuring real-time telemetry, model routing, speech synthesis & recognition, persistent memory, and vision analysis.
 
 ![JARVIS HUD](assets/jarvis_circle.png)
 
@@ -14,172 +9,78 @@ prompt or data ever has to leave your machine.
 
 ## Features
 
-- **Streaming chat** with local models (token-by-token output, with stop / regenerate / copy support)
-- **Voice input** (SpeechRecognition + pyaudio) and **voice output** (pyttsx3 TTS, with a mute toggle)
-- **Vision** — analyze a screenshot or any image file with a vision model
-- **Persistent memory** — `remember key=value` writes to `memory.json`
-- **Persistent chat history** — `chat_history.json`, replayed on launch
-- **App / website launcher** — VS Code, Edge, Notepad, Calculator, Downloads, YouTube, GitHub, ChatGPT
-- **System commands** — time/date, battery status, system status (CPU/RAM/net), and
-  shutdown/restart (with confirmation)
-- **Auto model routing** — picks a small fast model for casual chat and a bigger coder model
-  for code, and stays ("sticks") on the coder model through a coding conversation
-- **Offline-friendly health check** — the status dot is green when Ollama is reachable, red when it's down
-- Packaged as a standalone **`.exe`** via PyInstaller
+- **Streaming Chat** with token-by-token output, stop controls, regeneration, and copy functionality.
+- **Voice Synthesizer (TTS)** using Web Speech API with automatic markdown and code fence stripping for natural spoken cadence.
+- **Voice Dictation (STT)** with active microphone status indicator.
+- **Vision Feed Analysis Matrix** — upload or analyze images and screen frames with neural object segmentation and OCR telemetry.
+- **Persistent Key-Value Memory** (`remember key=value`, `recall key`, `forget key`, `show memory`) stored and persisted across sessions.
+- **HUD Arc-Reactor Core Telemetry** — real-time CPU & RAM gauges, clock, and energy matrix visualization.
+- **Sticky Model Routing** — automatically shifts between small conversational models (`qwen2.5:3b`) and coder models (`qwen2.5-coder:7b`) on coding keywords and maintains context stickiness.
+- **System Commands & App Hub** — quick launch for VS Code, Edge, YouTube, GitHub, ChatGPT, Calculator, and system diagnostics with confirmation safety gates.
+- **Attribution & Authenticity Verification** — integrity-guarded creator credit layer (`J.A.R.V.I.S (c) 2026 vinod`).
 
 ---
 
-## Architecture
+## Project Structure
 
-The app is split into GUI-agnostic backend logic and the GUI, so the core can be unit-tested
-without a display:
-
-| File | Purpose |
-|---|---|
-| `jarvis_gui.py` | Main application (~2000 lines). The GUI — this is the file you edit. |
-| `jarvis_gui.pyw` | Byte-for-byte identical copy of `jarvis_gui.py` with a `.pyw` extension (runs without a console window). **Keep the two in sync.** |
-| `jarvis_backend.py` | GUI-agnostic logic: `MemoryStore`, `ChatHistory`, system-prompt building, request-message assembly. |
-| `jarvis_providers.py` | Provider abstraction for local Ollama and (optional) cloud models. All network/model inference goes through here — no shell exec, no autonomous actions. |
-| `jarvis.py` | Headless (terminal) edition that shares `memory.json` / `chat_history.json` with the GUI. |
-| `config.toml` | Optional config for a cloud LLM router (only used for non-Ollama providers). Git-ignored by default -- **keep any secrets local and never commit them.** |
-| `run_venv.ps1` | Launcher that runs a script under the project's `win-venv` and (by default) starts the Ollama server if it isn't already up. |
-| `build_exe.bat` | Builds `dist\JARVIS.exe` with PyInstaller (onefile, windowed, custom icon). |
-| `tests/` | Pytest suite for the backend (e.g. `tests/test_backend_fix2.py`). |
-
----
-
-## Requirements
-
-- **Windows** (the app is Windows-first; a few paths/launchers are Windows-specific)
-- **Python 3** (tested with 3.14 in the bundled `win-venv`)
-- **[Ollama](https://ollama.com)** installed and running, with at least one model pulled
-- Python packages (also listed in `requirements.txt`):
-
-  ```
-  customtkinter
-  Pillow
-  ollama
-  pyttsx3
-  pyautogui
-  psutil
-  SpeechRecognition
-  pyaudio
-  ```
-
-  (`pyperclip` is an optional dependency used for clipboard copy; the app falls back to Tk's clipboard if it isn't installed.)
-
----
-
-## Setup
-
-1. **Install Ollama** and pull a model, e.g.:
-
-   ```powershell
-   ollama pull qwen2.5:3b
-   ollama pull qwen2.5-coder:7b      # used by "auto" routing for coding
-   ollama pull llama3.2-vision:latest  # default vision model
-   ```
-
-   The model list shown in the GUI is populated dynamically from `ollama list()`;
-   the hardcoded fallback set is `["auto", "qwen2.5:3b", "qwen2.5-coder:7b"]`.
-
-2. **Create the virtual environment** (PowerShell):
-
-   ```powershell
-   python -m venv win-venv
-   win-venv\Scripts\pip install -r requirements.txt
-   ```
-
-3. **Run the assistant**:
-
-   ```powershell
-   .\run_venv.ps1 jarvis_gui.py
-   ```
-
-   `run_venv.ps1` forces the project `win-venv` interpreter and auto-starts the
-   Ollama server (pass `-NoOllama` to skip that).
-
-   To run the headless/terminal edition instead:
-
-   ```powershell
-   .\run_venv.ps1 jarvis.py
-   ```
-
-### Build a standalone `.exe`
-
-```powershell
-.\build_exe.bat      # output: dist\JARVIS.exe
+```
+├── assets/
+│   └── jarvis_circle.png        # Arc Reactor HUD asset
+├── src/
+│   ├── components/
+│   │   ├── ArcReactor.tsx       # SVG Arc Reactor core animation
+│   │   ├── ChatView.tsx         # Main chat, code blocks, input history, commands
+│   │   ├── HomeView.tsx         # System overview & tactical shortcuts
+│   │   ├── MemoryView.tsx       # Interactive memory manager
+│   │   ├── SettingsView.tsx     # Model routing & TTS preferences
+│   │   ├── Sidebar.tsx          # Nav, recent chats, clearance card
+│   │   ├── Topbar.tsx           # Status indicators, clock, audio toggle
+│   │   └── VisionView.tsx       # Optical scan and object segmentation
+│   ├── services/
+│   │   ├── attribution.ts       # Creator attribution & anti-tamper registry
+│   │   ├── jarvisBrain.ts       # Command dispatcher, routing, & streaming
+│   │   └── speech.ts            # Speech synthesis & dictation service
+│   ├── types.ts                 # Shared TypeScript interfaces
+│   ├── App.tsx                  # Main application state and view router
+│   ├── index.css                # HUD styling and neon cyan palette
+│   └── main.tsx                 # React entry point
+├── index.html                   # HTML entry point with Share Tech Mono font
+├── metadata.json                # AI Studio application metadata
+├── package.json                 # Dependencies and dev server scripts
+├── tsconfig.json                # TypeScript compiler configuration
+└── vite.config.ts               # Vite configuration
 ```
 
 ---
 
-## Usage
+## Development
 
-- Type in the input bar and press **Enter** to send.
-- **↑ / ↓** cycle through previously sent messages.
-- **Ctrl+L** clear screen · **Ctrl+E** export chat · **Ctrl+M** mute voice · **Ctrl+Q** quit.
-- Hover over the **＋** (attach) menu or the icon buttons for tooltips.
-- Pick a model in the input bar or in **Settings** (model, vision model, temperature,
-  response length, and keep-alive are all adjustable).
-- In **Auto** mode the assistant sticks with the coder model through a coding
-  conversation instead of switching models on every message.
+```bash
+# Install dependencies
+npm install
 
-### Commands
+# Start Vite dev server on port 3000
+npm run dev
 
-Type these in the chat box:
-
-**Memory**
-- `remember key=value` · `recall key` · `show memory` · `forget key`
-
-**Vision**
-- `analyze image` (opens a file picker) · `screenshot` (captures + analyzes the screen)
-- or use the **＋** menu / the **Vision** action in the sidebar
-
-**Chat history**
-- `new chat` (fresh conversation) · `clear screen` (wipe visible text) ·
-  `clear history` (wipe saved history) · `export chat` (save as `.md`)
-
-**Conversation controls**
-- `regenerate` (redo the last answer) · `stop` (cancel a reply mid-stream)
-- **＋** menu also has: copy last reply, regenerate, export, help
-
-**Web & apps**
-- `search <anything>` (Google search)
-- `open edge` · `open vscode` · `open downloads` · `open notepad` · `open calculator`
-- `open youtube` · `open github` · `open chatgpt`
-
-**Utilities**
-- `what time is it` · `whats todays date`
-- `shutdown pc` / `restart pc` (asks for confirmation)
-- `battery` (laptop charge/plug state) · `system status` (CPU/RAM/battery/network/Ollama)
-
-Type `help` in the chat for the in-app command reference.
-
----
-
-## Testing
-
-```powershell
-win-venv\Scripts\python.exe -m pytest tests/ -q
+# Build for production
+npm run build
 ```
 
 ---
 
-## Notes & conventions
+## Keyboard Shortcuts
 
-- The GUI talks to Ollama through `jarvis_providers` with an explicit connect timeout so a
-  slow/unreachable server can't freeze the UI; streaming generations are allowed to run long.
-- All worker-thread GUI updates go through `app.after(...)` (Tkinter is not thread-safe).
-- `memory.json`, `chat_history.json`, and `jarvis.log` are runtime files and are git-ignored.
-- `jarvis_gui.pyw` **must stay byte-identical** to `jarvis_gui.py`.
+- **Enter**: Send message
+- **Shift + Enter**: Newline
+- **Up / Down**: Cycle through previous input history
+- **Esc**: Clear composer
+- **Ctrl + L**: Clear current display
+- **Ctrl + E**: Export conversation as Markdown
+- **Ctrl + M**: Toggle voice synthesizer mute
 
-## License
+---
 
-**MIT — with a required attribution.** Free to use, study, modify, and redistribute,
-provided the creator credit **"J.A.R.V.I.S — (c) 2026 vinod"** is retained in the
-software, its documentation, and any redistributed or derivative copies. Removing or
-obscuring that credit is not permitted. Full text: [LICENSE](LICENSE).
+## License & Attribution
 
-This requirement is reinforced in code by [`attribution.py`](attribution.py), which
-re-assembles and re-stamps the credit on every run.
-
+**MIT — with required attribution.** Free to use, study, modify, and redistribute, provided the creator credit **"J.A.R.V.I.S — (c) 2026 vinod"** is retained in the software, its documentation, and any redistributed or derivative copies.
+Removing or obscuring that credit is not permitted. Full text: [LICENSE](LICENSE).

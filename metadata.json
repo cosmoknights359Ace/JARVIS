@@ -1,0 +1,7 @@
+{
+  "name": "J.A.R.V.I.S",
+  "description": "J.A.R.V.I.S - Just A Rather Very Intelligent System. Personal AI desktop assistant with streaming chat, system monitoring, memory, vision analysis, and voice synthesis.",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

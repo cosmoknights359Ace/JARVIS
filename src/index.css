@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #070709;
+    color: #F4F4F6;
+    font-family: var(--font-sans);
+    overflow: hidden;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-sans {
+  font-family: var(--font-sans);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fade-in and Fade-out Futuristic Triangle Animations */
+@keyframes triangleFadeCycle {
+  0%, 100% {
+    opacity: 0.14;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.03);
+  }
+}
+
+@keyframes triangleInnerFade {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(1.02);
+  }
+  50% {
+    opacity: 0.18;
+    transform: scale(0.94);
+  }
+}
+
+@keyframes triangleCoreBreath {
+  0%, 100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-triangle-fade {
+  animation: triangleFadeCycle 4.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-triangle-inner {
+  animation: triangleInnerFade 4.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-triangle-core {
+  animation: triangleCoreBreath 3s ease-in-out infinite;
+}
+
+/* Crisp Black & Orange Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(249, 115, 22, 0.22);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(249, 115, 22, 0.55);
+}

@@ -1,8 +1,0 @@
-customtkinter
-Pillow
-ollama
-pyttsx3
-pyautogui
-psutil
-SpeechRecognition
-pyaudio
