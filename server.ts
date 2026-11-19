@@ -11,13 +11,19 @@ import {
   exportFilledDocument,
   XfillFileType
 } from './server/xfillEngine.ts';
+import {
+  generateSlideDeck,
+  regenerateSingleSlide,
+  searchWebImages,
+  exportDeckToPptx
+} from './server/slidesEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_STARTED_AT = Date.now();
 const GEMINI_DEFAULT_MODEL = 'gemini-4-hydrogen';
-const CREATOR_ATTRIBUTION_HEADER = 'J.A.R.V.I.S (c) 2026 vinod';
-const EXPECTED_COPYRIGHT_SEAL = 'c2bd67a94d0f63bf';
+const CREATOR_ATTRIBUTION_HEADER = 'J.A.R.V.I.S (c) 2026 cosmoknight';
+const EXPECTED_COPYRIGHT_SEAL = 'ceff726d5d41618b';
 
 function verifyServerAttribution() {
   const licensePath = path.join(__dirname, 'LICENSE');
@@ -29,7 +35,7 @@ function verifyServerAttribution() {
   try {
     const licenseText = fs.readFileSync(licensePath, 'utf8');
     licenseIntact =
-      licenseText.includes('Copyright (c) 2026 vinod') &&
+      licenseText.includes('Copyright (c) 2026 cosmoknight') &&
       licenseText.includes('J.A.R.V.I.S') &&
       licenseText.includes('NOT permitted');
   } catch {
@@ -39,7 +45,7 @@ function verifyServerAttribution() {
   try {
     const noticeText = fs.readFileSync(noticePath, 'utf8');
     noticeIntact =
-      noticeText.includes('Copyright (c) 2026 vinod') &&
+      noticeText.includes('Copyright (c) 2026 cosmoknight') &&
       noticeText.includes(EXPECTED_COPYRIGHT_SEAL);
   } catch {
     noticeIntact = false;
@@ -567,6 +573,149 @@ async function startServer() {
     } catch (error: any) {
       console.error('Xfill export error:', error);
       res.status(400).json({ error: error?.message || 'Failed to export updated document.' });
+    }
+  });
+
+  // ============================================================================
+  // Slides PPT Generator Endpoints (Local Ollama -> Gemini Cloud + Consent Web Images)
+  // ============================================================================
+
+  app.post('/api/jarvis/slides/generate', async (req, res) => {
+    try {
+      const {
+        topic = '',
+        slideCount = 8,
+        audience = 'executive',
+        themeId = 'obsidian-orange',
+        contextNotes = '',
+        includeMemory = true,
+        memory = {},
+        modelName = 'qwen2.5:3b',
+        ollamaHost = 'http://127.0.0.1:11434',
+        keepAliveMinutes = 30
+      } = req.body || {};
+
+      if (!topic || typeof topic !== 'string' || !topic.trim()) {
+        res.status(400).json({ error: 'Presentation topic is required.' });
+        return;
+      }
+
+      const result = await generateSlideDeck(
+        {
+          topic: topic.trim(),
+          slideCount: Number(slideCount) || 8,
+          audience:
+            audience === 'technical' || audience === 'educational' || audience === 'pitch'
+              ? audience
+              : 'executive',
+          themeId,
+          contextNotes: typeof contextNotes === 'string' ? contextNotes : '',
+          includeMemory: Boolean(includeMemory),
+          memory: memory && typeof memory === 'object' ? memory : {},
+          modelName,
+          ollamaHost,
+          keepAliveMinutes: Number(keepAliveMinutes) || 30
+        },
+        getAiClient()
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      console.error('Slides generate error:', error);
+      res.status(500).json({ error: error?.message || 'Failed to generate presentation deck.' });
+    }
+  });
+
+  app.post('/api/jarvis/slides/regenerate-slide', async (req, res) => {
+    try {
+      const {
+        deckTitle = '',
+        topic = '',
+        audience = 'executive',
+        slide,
+        slideIndex = 0,
+        totalSlides = 1,
+        instruction = '',
+        contextNotes = '',
+        modelName = 'qwen2.5:3b',
+        ollamaHost = 'http://127.0.0.1:11434',
+        keepAliveMinutes = 30
+      } = req.body || {};
+
+      if (!slide || typeof slide !== 'object') {
+        res.status(400).json({ error: 'slide object is required.' });
+        return;
+      }
+
+      const result = await regenerateSingleSlide(
+        {
+          deckTitle,
+          topic,
+          audience,
+          slide,
+          slideIndex: Number(slideIndex) || 0,
+          totalSlides: Number(totalSlides) || 1,
+          instruction,
+          contextNotes,
+          modelName,
+          ollamaHost,
+          keepAliveMinutes: Number(keepAliveMinutes) || 30
+        },
+        getAiClient()
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      console.error('Slides regenerate error:', error);
+      res.status(500).json({ error: error?.message || 'Failed to regenerate slide.' });
+    }
+  });
+
+  app.post('/api/jarvis/slides/image-search', async (req, res) => {
+    try {
+      const { query = '', consentGranted = false, limit = 6 } = req.body || {};
+      if (!consentGranted) {
+        res.status(403).json({
+          error: 'Explicit user consent is required before accessing web image search.'
+        });
+        return;
+      }
+      if (!query || typeof query !== 'string' || !query.trim()) {
+        res.status(400).json({ error: 'Search query is required.' });
+        return;
+      }
+
+      const images = await searchWebImages(query.trim(), true, Math.min(10, Number(limit) || 6));
+      res.json({ images });
+    } catch (error: any) {
+      const code = error?.statusCode === 403 ? 403 : 500;
+      console.error('Slides image search error:', error);
+      res.status(code).json({ error: error?.message || 'Web image search failed.' });
+    }
+  });
+
+  app.post('/api/jarvis/slides/export', async (req, res) => {
+    try {
+      const { deck } = req.body || {};
+      if (!deck || !Array.isArray(deck.slides) || deck.slides.length === 0) {
+        res.status(400).json({ error: 'A valid slide deck with at least one slide is required.' });
+        return;
+      }
+
+      const exported = await exportDeckToPptx(deck);
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${exported.fileName.replace(/"/g, '')}"`
+      );
+      res.setHeader('X-Embedded-Images', String(exported.embeddedImages));
+      res.send(exported.buffer);
+    } catch (error: any) {
+      console.error('Slides export error:', error);
+      res.status(500).json({ error: error?.message || 'Failed to compile PowerPoint file.' });
     }
   });
 

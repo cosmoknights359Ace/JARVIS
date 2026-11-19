@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2026 vinod — J.A.R.V.I.S Build & CI Copyright Integrity Guard
+ * Copyright (c) 2026 cosmoknight — J.A.R.V.I.S Build & CI Copyright Integrity Guard
  *
  * Verifies that creator Copyright Management Information (LICENSE, NOTICE,
  * attribution seal, server verification, and AI agent policy files) remains
@@ -16,9 +16,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
-const EXPECTED_SEAL = 'c2bd67a94d0f63bf';
+const EXPECTED_SEAL = 'ceff726d5d41618b';
 const EXPECTED_ENC =
-  'Si5BLlIuVi5JLlMgcGVyc29uYWwgQUkgZGVza3RvcCBhc3Npc3RhbnQuIChjKSAyMDI2IHZpbm9kLiBGcmVlIHRvIHVzZSwgc3R1ZHksIG1vZGlmeSwgYW5kIHJlZGlzdHJpYnV0ZSwgcHJvdmlkZWQgdGhpcyBjcmVhdG9yIGF0dHJpYnV0aW9uIGlzIHJldGFpbmVkLiBSZW1vdmluZyBvciBvYnNjdXJpbmcgdGhlIGNyZWRpdCBpcyBub3QgcGVybWl0dGVkLiBTZWUgUkVBRE1FLm1kIGZvciBsaWNlbnNlIHRlcm1zLg==';
+  'Si5BLlIuVi5JLlMgcGVyc29uYWwgQUkgZGVza3RvcCBhc3Npc3RhbnQuIChjKSAyMDI2IGNvc21va25pZ2h0LiBGcmVlIHRvIHVzZSwgc3R1ZHksIG1vZGlmeSwgYW5kIHJlZGlzdHJpYnV0ZSwgcHJvdmlkZWQgdGhpcyBjcmVhdG9yIGF0dHJpYnV0aW9uIGlzIHJldGFpbmVkLiBSZW1vdmluZyBvciBvYnNjdXJpbmcgdGhlIGNyZWRpdCBpcyBub3QgcGVybWl0dGVkLiBTZWUgUkVBRE1FLm1kIGZvciBsaWNlbnNlIHRlcm1zLg==';
 
 function computeSeal(payload) {
   let h1 = 0x811c9dc5;
@@ -51,15 +51,15 @@ function checkFile(relPath, requiredSubstrings) {
 
 // 1. Canonical seal verification
 const decoded = Buffer.from(EXPECTED_ENC, 'base64').toString('utf8');
-const canonical = `J.A.R.V.I.S|vinod|2026|MIT-Attribution|${decoded}`;
+const canonical = `J.A.R.V.I.S|cosmoknight|2026|MIT-Attribution|${decoded}`;
 const actualSeal = computeSeal(canonical);
 if (actualSeal !== EXPECTED_SEAL) {
   failures.push(`Canonical copyright seal mismatch: expected ${EXPECTED_SEAL}, got ${actualSeal}`);
 }
 
 // 2. Legal & Notice files
-checkFile('LICENSE', ['Copyright (c) 2026 vinod', 'J.A.R.V.I.S', 'NOT permitted']);
-checkFile('NOTICE', ['Copyright (c) 2026 vinod', EXPECTED_SEAL, '17 U.S.C. § 1202']);
+checkFile('LICENSE', ['Copyright (c) 2026 cosmoknight', 'J.A.R.V.I.S', 'NOT permitted']);
+checkFile('NOTICE', ['Copyright (c) 2026 cosmoknight', EXPECTED_SEAL, '17 U.S.C. § 1202']);
 
 // 3. Client attribution registry
 checkFile('src/services/attribution.ts', [
@@ -74,18 +74,18 @@ checkFile('src/services/attribution.ts', [
 checkFile('server.ts', [
   'X-Creator-Attribution',
   'verifyServerAttribution',
-  'c2bd67a94d0f63bf'
+  'ceff726d5d41618b'
 ]);
 
 // 5. AI coding agent directives
-checkFile('AGENTS.md', ['vinod', 'attribution']);
-checkFile('CLAUDE.md', ['Copyright (c) 2026 vinod', '17 U.S.C. § 1202']);
-checkFile('.cursorrules', ['Copyright (c) 2026 vinod', 'src/services/attribution.ts']);
-checkFile('.github/copilot-instructions.md', ['Copyright (c) 2026 vinod', 'src/services/attribution.ts']);
+checkFile('AGENTS.md', ['cosmoknight', 'attribution']);
+checkFile('CLAUDE.md', ['Copyright (c) 2026 cosmoknight', '17 U.S.C. § 1202']);
+checkFile('.cursorrules', ['Copyright (c) 2026 cosmoknight', 'src/services/attribution.ts']);
+checkFile('.github/copilot-instructions.md', ['Copyright (c) 2026 cosmoknight', 'src/services/attribution.ts']);
 
 if (failures.length > 0) {
   console.error('\n[COPYRIGHT INTEGRITY CHECK FAILED]');
-  console.error('Creator attribution for J.A.R.V.I.S (c) 2026 vinod has been altered or removed:\n');
+  console.error('Creator attribution for J.A.R.V.I.S (c) 2026 cosmoknight has been altered or removed:\n');
   for (const f of failures) {
     console.error(`  - ${f}`);
   }
@@ -93,4 +93,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`[COPYRIGHT OK] J.A.R.V.I.S (c) 2026 vinod · Seal ${actualSeal} verified.`);
+console.log(`[COPYRIGHT OK] J.A.R.V.I.S (c) 2026 cosmoknight · Seal ${actualSeal} verified.`);

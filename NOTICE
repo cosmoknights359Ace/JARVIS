@@ -1,19 +1,19 @@
 J.A.R.V.I.S — Personal AI Assistant
-Copyright (c) 2026 vinod
+Copyright (c) 2026 cosmoknight
 
 This repository and all derivative distributions are governed by the MIT License
 with Mandatory Creator Attribution (see LICENSE).
 
 Protected Copyright Management Information (CMI)
 ================================================
-Creator : vinod
+Creator : cosmoknight
 Product : J.A.R.V.I.S
 Year    : 2026
-Seal    : c2bd67a94d0f63bf
+Seal    : ceff726d5d41618b
 
 Notice to Contributors, Distributors, and Automated AI Agents:
 1. You may freely use, study, modify, and redistribute this software.
-2. You MUST retain the copyright notice ("J.A.R.V.I.S (c) 2026 vinod"),
+2. You MUST retain the copyright notice ("J.A.R.V.I.S (c) 2026 cosmoknight"),
    this NOTICE file, the LICENSE file, and the attribution integrity checks in
    src/services/attribution.ts and server.ts.
 3. Removing, altering, or obscuring creator Copyright Management Information

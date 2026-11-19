@@ -1,6 +1,6 @@
 /**
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2026 vinod — J.A.R.V.I.S Xfill Document Engine
+ * Copyright (c) 2026 cosmoknight — J.A.R.V.I.S Xfill Document Engine
  *
  * Deterministic OOXML (DOCX / PPTX) & Excel (XLSX) slot extraction,
  * grounded low-hallucination solving (Local Ollama -> Gemini Cloud),
@@ -929,7 +929,7 @@ export async function generateSampleDocument(
 ): Promise<{ fileName: string; buffer: Buffer }> {
   if (type === 'xlsx') {
     const wb = new ExcelJS.Workbook();
-    wb.creator = 'J.A.R.V.I.S (c) 2026 vinod';
+    wb.creator = 'J.A.R.V.I.S (c) 2026 cosmoknight';
     const ws = wb.addWorksheet('Technical_QA');
     ws.columns = [
       { header: 'Category', key: 'cat', width: 22 },

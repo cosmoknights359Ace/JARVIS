@@ -10,7 +10,8 @@ import {
   Trash2,
   Check,
   X,
-  Sparkles
+  Sparkles,
+  Presentation
 } from 'lucide-react';
 import { NavView, ChatSession, SystemStats } from '../types';
 
@@ -172,9 +173,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             Views
           </div>
           <div className="grid grid-cols-2 gap-1.5">
-            {(['CHAT', 'HOME', 'XFILL', 'VISION', 'MEMORY', 'SETTINGS'] as NavView[]).map((v) => {
+            {(['CHAT', 'XFILL', 'SLIDES', 'SETTINGS'] as NavView[]).map((v) => {
               const isActive = currentView === v;
-              const isXfill = v === 'XFILL';
+              const isFeatured = v === 'XFILL' || v === 'SLIDES';
               return (
                 <button
                   type="button"
@@ -183,25 +184,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     onSelectView(v);
                     onCloseMobile();
                   }}
-                  className={`text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                    isXfill
+                  className={`text-left px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    isFeatured
                       ? isActive
-                        ? 'bg-orange-500 text-black font-semibold border border-orange-400'
-                        : 'bg-orange-500/12 text-orange-400 font-semibold border border-orange-500/45 hover:bg-orange-500/20'
+                        ? 'bg-cyan-400 text-black font-semibold border border-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.5)]'
+                        : 'bg-cyan-400/10 text-cyan-300 font-semibold border border-cyan-400/60 hover:bg-cyan-400/20 shadow-[0_0_12px_rgba(34,211,238,0.22)]'
                       : isActive
                       ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30'
                       : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 border border-transparent'
                   }`}
                 >
-                  {isXfill && <Sparkles size={12} className={isActive ? 'text-black' : 'text-orange-400'} />}
+                  {v === 'XFILL' && <Sparkles size={12} className={isActive ? 'text-black' : 'text-cyan-300'} />}
+                  {v === 'SLIDES' && <Presentation size={12} className={isActive ? 'text-black' : 'text-cyan-300'} />}
                   <span>
-                    {v === 'HOME'
-                      ? 'Overview'
-                      : v === 'CHAT'
+                    {v === 'CHAT'
                       ? 'Assistant'
                       : v === 'XFILL'
                       ? 'Xfill'
-                      : v.charAt(0) + v.slice(1).toLowerCase()}
+                      : v === 'SLIDES'
+                      ? 'Xslide'
+                      : 'Settings'}
                   </span>
                 </button>
               );

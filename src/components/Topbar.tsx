@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, Sparkles } from 'lucide-react';
+import { Menu, Sparkles, Presentation } from 'lucide-react';
 import { NavView } from '../types';
 
 interface TopbarProps {
@@ -17,10 +17,8 @@ export const Topbar: React.FC<TopbarProps> = ({
 }) => {
   const navItems: { view: NavView; label: string; featured?: boolean }[] = [
     { view: 'CHAT', label: 'Assistant' },
-    { view: 'HOME', label: 'Overview' },
     { view: 'XFILL', label: 'Xfill', featured: true },
-    { view: 'VISION', label: 'Vision' },
-    { view: 'MEMORY', label: 'Memory' },
+    { view: 'SLIDES', label: 'Xslide', featured: true },
     { view: 'SETTINGS', label: 'Settings' }
   ];
 
@@ -49,15 +47,15 @@ export const Topbar: React.FC<TopbarProps> = ({
         </a>
       </div>
 
-      {/* Zone 2: Centered navigation links with highlighted Xfill tab */}
-      <nav aria-label="Primary workspace navigation" className="hidden md:flex items-center gap-6 text-sm font-medium">
+      {/* Zone 2: Centered navigation links */}
+      <nav aria-label="Primary workspace navigation" className="hidden md:flex items-center gap-7 text-sm font-medium">
         {navItems.map((item) => {
           const isActive = currentView === item.view;
           if (item.featured) {
             return (
               <a
                 key={item.view}
-                href="#xfill"
+                href={`#${item.label.toLowerCase()}`}
                 aria-current={isActive ? 'page' : undefined}
                 onClick={(e) => {
                   e.preventDefault();
@@ -65,11 +63,15 @@ export const Topbar: React.FC<TopbarProps> = ({
                 }}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-all whitespace-nowrap shrink-0 ${
                   isActive
-                    ? 'bg-orange-500 border-orange-400 text-black font-semibold shadow-[0_0_20px_rgba(249,115,22,0.38)]'
-                    : 'bg-orange-500/12 border-orange-500/45 text-orange-400 font-semibold hover:bg-orange-500/20 hover:border-orange-400 hover:text-orange-300 shadow-[0_0_16px_rgba(249,115,22,0.16)]'
+                    ? 'bg-cyan-400 border-cyan-300 text-black font-semibold shadow-[0_0_22px_rgba(34,211,238,0.6)]'
+                    : 'bg-cyan-400/10 border-cyan-400/60 text-cyan-300 font-semibold hover:bg-cyan-400/20 hover:border-cyan-300 hover:text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.28)]'
                 }`}
               >
-                <Sparkles size={13} className={isActive ? 'text-black' : 'text-orange-400'} />
+                {item.view === 'SLIDES' ? (
+                  <Presentation size={13} className={isActive ? 'text-black' : 'text-cyan-300'} />
+                ) : (
+                  <Sparkles size={13} className={isActive ? 'text-black' : 'text-cyan-300'} />
+                )}
                 <span>{item.label}</span>
               </a>
             );

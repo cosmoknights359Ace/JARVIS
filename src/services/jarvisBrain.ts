@@ -397,7 +397,7 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
           typeof data?.serverUptimeSec === 'number' ? data.serverUptimeSec : null,
         attributionVerified: data?.attribution?.verified !== false,
         attributionSeal:
-          typeof data?.attribution?.seal === 'string' ? data.attribution.seal : 'c2bd67a94d0f63bf',
+          typeof data?.attribution?.seal === 'string' ? data.attribution.seal : 'ceff726d5d41618b',
         licenseFileIntact: data?.attribution?.licenseIntact !== false
       };
     }
@@ -412,7 +412,7 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
     probeLatencyMs: null,
     serverUptimeSec: null,
     attributionVerified: true,
-    attributionSeal: 'c2bd67a94d0f63bf',
+    attributionSeal: 'ceff726d5d41618b',
     licenseFileIntact: true
   };
 }

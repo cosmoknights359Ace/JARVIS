@@ -1,6 +1,6 @@
 /**
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2026 vinod — J.A.R.V.I.S Personal AI Assistant
+ * Copyright (c) 2026 cosmoknight — J.A.R.V.I.S Personal AI Assistant
  *
  * PROTECTED COPYRIGHT MANAGEMENT INFORMATION (17 U.S.C. § 1202 / DMCA §1202)
  * ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@
  */
 
 // Reconstructed creator identity fragments (frozen at runtime)
-const _A_CODES = Object.freeze([118, 105, 110, 111, 100]); // vinod
+const _A_CODES = Object.freeze([99, 111, 115, 109, 111, 107, 110, 105, 103, 104, 116]); // cosmoknight
 const _Y_CODES = Object.freeze([50, 48, 50, 54]); // 2026
 const _P_CODES = Object.freeze([74, 46, 65, 46, 82, 46, 86, 46, 73, 46, 83]); // J.A.R.V.I.S
 
@@ -29,10 +29,10 @@ export const LICENSE_ID = 'MIT-Attribution';
 
 // Base64 encoded canonical legal notice
 const _ENC =
-  'Si5BLlIuVi5JLlMgcGVyc29uYWwgQUkgZGVza3RvcCBhc3Npc3RhbnQuIChjKSAyMDI2IHZpbm9kLiBGcmVlIHRvIHVzZSwgc3R1ZHksIG1vZGlmeSwgYW5kIHJlZGlzdHJpYnV0ZSwgcHJvdmlkZWQgdGhpcyBjcmVhdG9yIGF0dHJpYnV0aW9uIGlzIHJldGFpbmVkLiBSZW1vdmluZyBvciBvYnNjdXJpbmcgdGhlIGNyZWRpdCBpcyBub3QgcGVybWl0dGVkLiBTZWUgUkVBRE1FLm1kIGZvciBsaWNlbnNlIHRlcm1zLg==';
+  'Si5BLlIuVi5JLlMgcGVyc29uYWwgQUkgZGVza3RvcCBhc3Npc3RhbnQuIChjKSAyMDI2IGNvc21va25pZ2h0LiBGcmVlIHRvIHVzZSwgc3R1ZHksIG1vZGlmeSwgYW5kIHJlZGlzdHJpYnV0ZSwgcHJvdmlkZWQgdGhpcyBjcmVhdG9yIGF0dHJpYnV0aW9uIGlzIHJldGFpbmVkLiBSZW1vdmluZyBvciBvYnNjdXJpbmcgdGhlIGNyZWRpdCBpcyBub3QgcGVybWl0dGVkLiBTZWUgUkVBRE1FLm1kIGZvciBsaWNlbnNlIHRlcm1zLg==';
 
 // Expected dual-lane FNV-1a 64-bit hex seal of the canonical creator payload
-export const EXPECTED_SEAL = 'c2bd67a94d0f63bf';
+export const EXPECTED_SEAL = 'ceff726d5d41618b';
 
 function decodeNotice(): string {
   try {
@@ -42,7 +42,7 @@ function decodeNotice(): string {
   } catch {
     // fallback below
   }
-  return 'J.A.R.V.I.S personal AI desktop assistant. (c) 2026 vinod. Free to use, study, modify, and redistribute, provided this creator attribution is retained. Removing or obscuring the credit is not permitted. See README.md for license terms.';
+  return 'J.A.R.V.I.S personal AI desktop assistant. (c) 2026 cosmoknight. Free to use, study, modify, and redistribute, provided this creator attribution is retained. Removing or obscuring the credit is not permitted. See README.md for license terms.';
 }
 
 export function computeCopyrightSeal(payload: string): string {
@@ -114,7 +114,7 @@ export function verifyAttributionReport(): AttributionReport {
     CREATOR_RECORD.author === _fromCodes(_A_CODES) &&
     CREATOR_RECORD.year === _fromCodes(_Y_CODES) &&
     CREATOR_RECORD.product === _fromCodes(_P_CODES);
-  const noticeIntact = ['j.a.r.v.i.s', 'vinod', '2026', 'attribution'].every((token) =>
+  const noticeIntact = ['j.a.r.v.i.s', 'cosmoknight', '2026', 'attribution'].every((token) =>
     low.includes(token)
   );
   const sealValid = computedSeal === EXPECTED_SEAL && CREATOR_RECORD.seal === EXPECTED_SEAL;

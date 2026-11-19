@@ -12,6 +12,7 @@ import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { HomeView } from './components/HomeView';
 import { XfillView } from './components/XfillView';
+import { SlidesView } from './components/SlidesView';
 import { VisionView } from './components/VisionView';
 import { MemoryView } from './components/MemoryView';
 import { SettingsView } from './components/SettingsView';
@@ -636,7 +637,7 @@ export const App: React.FC = () => {
         >
           <span>
             <strong>Copyright Integrity Notice:</strong> Creator attribution or LICENSE/NOTICE metadata for{' '}
-            <code className="font-mono text-rose-100">J.A.R.V.I.S (c) 2026 vinod</code> appears modified. Retaining original creator credit is required by the license.
+            <code className="font-mono text-rose-100">J.A.R.V.I.S (c) 2026 cosmoknight</code> appears modified. Retaining original creator credit is required by the license.
           </span>
           <span className="font-mono text-[11px] text-rose-300 shrink-0">
             Seal mismatch
@@ -711,6 +712,14 @@ export const App: React.FC = () => {
               settings={settings}
               memory={memory}
               onUpdateMemory={setMemory}
+              stats={stats}
+            />
+          )}
+
+          {currentView === 'SLIDES' && (
+            <SlidesView
+              settings={settings}
+              memory={memory}
               stats={stats}
             />
           )}

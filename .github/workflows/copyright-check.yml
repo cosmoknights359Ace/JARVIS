@@ -6,7 +6,7 @@ on:
 
 jobs:
   verify-copyright:
-    name: Verify Creator Attribution (vinod, 2026)
+    name: Verify Creator Attribution (cosmoknight, 2026)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

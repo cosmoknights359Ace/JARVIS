@@ -1,4 +1,4 @@
-export type NavView = 'HOME' | 'CHAT' | 'XFILL' | 'VISION' | 'MEMORY' | 'SETTINGS';
+export type NavView = 'HOME' | 'CHAT' | 'XFILL' | 'SLIDES' | 'VISION' | 'MEMORY' | 'SETTINGS';
 
 export type MessageRole = 'user' | 'assist' | 'system' | 'boot';
 
@@ -103,3 +103,60 @@ export interface XfillOptions {
   answerStyle: 'concise' | 'detailed' | 'bullets';
   customInstructions: string;
 }
+
+export type SlideThemeId =
+  | 'obsidian-orange'
+  | 'editorial-ivory'
+  | 'slate-executive'
+  | 'emerald-tech';
+
+export type SlideLayoutType =
+  | 'title'
+  | 'bullets'
+  | 'split_image'
+  | 'two_column'
+  | 'stat_highlight';
+
+export type SlideAudience = 'executive' | 'technical' | 'educational' | 'pitch';
+
+export interface SlideImageAsset {
+  url: string;
+  thumbUrl: string;
+  caption: string;
+  credit: string;
+  source: 'wikimedia' | 'openverse';
+  width?: number;
+  height?: number;
+}
+
+export interface SlideItem {
+  id: string;
+  layout: SlideLayoutType;
+  kicker: string;
+  title: string;
+  subtitle?: string;
+  bullets: string[];
+  secondaryBullets?: string[];
+  highlightStat?: {
+    value: string;
+    label: string;
+  };
+  speakerNotes: string;
+  imageQuery: string;
+  image?: SlideImageAsset | null;
+}
+
+export interface SlideDeck {
+  id: string;
+  title: string;
+  subtitle: string;
+  topic: string;
+  themeId: SlideThemeId;
+  audience: SlideAudience;
+  provider: 'ollama' | 'gemini';
+  model: string;
+  createdAt: string;
+  updatedAt: string;
+  slides: SlideItem[];
+}
+
