@@ -82,5 +82,5 @@ npm run build
 
 ## License & Attribution
 
-**MIT — with required attribution.** Free to use, study, modify, and redistribute, provided the creator credit **"J.A.R.V.I.S — (c) 2026 vinod"** is retained in the software, its documentation, and any redistributed or derivative copies.
+**MIT — with required attribution.** Free to use, study, modify, and redistribute, provided the creator credit **"J.A.R.V.I.S — (c) 2026 cosmoknight"** is retained in the software, its documentation, and any redistributed or derivative copies.
 Removing or obscuring that credit is not permitted. Full text: [LICENSE](LICENSE).
