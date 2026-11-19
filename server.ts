@@ -1,10 +1,65 @@
 import express from 'express';
+import fs from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
+import {
+  inspectAndCacheDocument,
+  generateSampleDocument,
+  solveDocumentSlots,
+  exportFilledDocument,
+  XfillFileType
+} from './server/xfillEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const SERVER_STARTED_AT = Date.now();
+const GEMINI_DEFAULT_MODEL = 'gemini-4-hydrogen';
+const CREATOR_ATTRIBUTION_HEADER = 'J.A.R.V.I.S (c) 2026 vinod';
+const EXPECTED_COPYRIGHT_SEAL = 'c2bd67a94d0f63bf';
+
+function verifyServerAttribution() {
+  const licensePath = path.join(__dirname, 'LICENSE');
+  const noticePath = path.join(__dirname, 'NOTICE');
+
+  let licenseIntact = false;
+  let noticeIntact = false;
+
+  try {
+    const licenseText = fs.readFileSync(licensePath, 'utf8');
+    licenseIntact =
+      licenseText.includes('Copyright (c) 2026 vinod') &&
+      licenseText.includes('J.A.R.V.I.S') &&
+      licenseText.includes('NOT permitted');
+  } catch {
+    licenseIntact = false;
+  }
+
+  try {
+    const noticeText = fs.readFileSync(noticePath, 'utf8');
+    noticeIntact =
+      noticeText.includes('Copyright (c) 2026 vinod') &&
+      noticeText.includes(EXPECTED_COPYRIGHT_SEAL);
+  } catch {
+    noticeIntact = false;
+  }
+
+  const fingerprint = crypto
+    .createHash('sha256')
+    .update(`${CREATOR_ATTRIBUTION_HEADER}|${EXPECTED_COPYRIGHT_SEAL}|${licenseIntact}|${noticeIntact}`)
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    verified: licenseIntact && noticeIntact,
+    short: CREATOR_ATTRIBUTION_HEADER,
+    seal: EXPECTED_COPYRIGHT_SEAL,
+    licenseIntact,
+    noticeIntact,
+    fingerprint
+  };
+}
 
 function getAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -19,10 +74,15 @@ function getAiClient(): GoogleGenAI | null {
   });
 }
 
-async function checkLocalOllamaServer(host: string): Promise<{ reachable: boolean; models: string[] }> {
-  const cleanHost = (host || 'http://127.0.0.1:11434').replace(/\/+$/, '').replace('localhost', '127.0.0.1');
+async function checkLocalOllamaServer(
+  host: string
+): Promise<{ reachable: boolean; models: string[]; latencyMs: number }> {
+  const cleanHost = (host || 'http://127.0.0.1:11434')
+    .replace(/\/+$/, '')
+    .replace('localhost', '127.0.0.1');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1500);
+  const started = Date.now();
 
   try {
     const res = await fetch(`${cleanHost}/api/tags`, {
@@ -30,15 +90,16 @@ async function checkLocalOllamaServer(host: string): Promise<{ reachable: boolea
       signal: controller.signal
     });
     clearTimeout(timeout);
-    if (!res.ok) return { reachable: false, models: [] };
+    const latencyMs = Math.max(1, Date.now() - started);
+    if (!res.ok) return { reachable: false, models: [], latencyMs };
     const data: any = await res.json();
     const models = Array.isArray(data?.models)
       ? data.models.map((m: any) => m.name).filter(Boolean)
       : [];
-    return { reachable: true, models };
+    return { reachable: true, models, latencyMs };
   } catch {
     clearTimeout(timeout);
-    return { reachable: false, models: [] };
+    return { reachable: false, models: [], latencyMs: Math.max(1, Date.now() - started) };
   }
 }
 
@@ -46,19 +107,47 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '15mb' }));
 
-  // Clean Server-Side Health & Ollama Probe Endpoint (prevents browser CORS/ERR_CONNECTION_REFUSED errors)
+  // Stamp creator attribution on all API responses (DMCA §1202 CMI)
+  app.use('/api/jarvis', (_req, res, next) => {
+    res.setHeader('X-Creator-Attribution', CREATOR_ATTRIBUTION_HEADER);
+    res.setHeader('X-Copyright-Seal', EXPECTED_COPYRIGHT_SEAL);
+    next();
+  });
+
+  // Real Server-Side Health, Provider, Latency & Copyright Integrity Endpoint
   app.get('/api/jarvis/health', async (req, res) => {
+    const reqStart = Date.now();
     const host = typeof req.query.host === 'string' ? req.query.host : 'http://127.0.0.1:11434';
     const ollamaStatus = await checkLocalOllamaServer(host);
+    const geminiAvailable = Boolean(process.env.GEMINI_API_KEY);
+    const activeProvider = ollamaStatus.reachable
+      ? 'ollama'
+      : geminiAvailable
+      ? 'gemini'
+      : 'offline';
+    const attribution = verifyServerAttribution();
+
     res.json({
       reachable: ollamaStatus.reachable,
       models: ollamaStatus.models,
-      geminiAvailable: Boolean(process.env.GEMINI_API_KEY)
+      geminiAvailable,
+      activeProvider,
+      probeLatencyMs: ollamaStatus.reachable ? ollamaStatus.latencyMs : Math.max(1, Date.now() - reqStart),
+      serverUptimeSec: Math.floor((Date.now() - SERVER_STARTED_AT) / 1000),
+      attribution
     });
   });
 
-  // Streaming Chat Endpoint (supports Local Ollama proxy + Gemini 3.8 Flash SSE stream)
+  // Streaming Chat Endpoint (Local Ollama -> Gemini Cloud via SSE with real latency & abort handling)
   app.post('/api/jarvis/chat', async (req, res) => {
+    let clientClosed = false;
+    const upstreamAbort = new AbortController();
+
+    req.on('close', () => {
+      clientClosed = true;
+      upstreamAbort.abort();
+    });
+
     try {
       const {
         prompt,
@@ -80,14 +169,31 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
 
+      const requestStart = Date.now();
+
+      const writeEvent = (payload: Record<string, unknown>) => {
+        if (!clientClosed && !res.writableEnded) {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        }
+      };
+
+      const endStream = () => {
+        if (!clientClosed && !res.writableEnded) {
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }
+      };
+
       // 1. Try local Ollama first if running on user's machine
       const cleanHost = (ollamaHost || 'http://127.0.0.1:11434')
         .replace(/\/+$/, '')
         .replace('localhost', '127.0.0.1');
 
       try {
-        const ollamaCtrl = new AbortController();
-        const ollamaTimeout = setTimeout(() => ollamaCtrl.abort(), 1500);
+        const connectCtrl = new AbortController();
+        const connectTimeout = setTimeout(() => connectCtrl.abort(), 1500);
+        const onUpstreamAbort = () => connectCtrl.abort();
+        upstreamAbort.signal.addEventListener('abort', onUpstreamAbort, { once: true });
 
         const ollamaMessages = [
           {
@@ -118,17 +224,20 @@ async function startServer() {
               num_predict: Number(maxTokens) || 1024
             }
           }),
-          signal: ollamaCtrl.signal
+          signal: connectCtrl.signal
         });
 
-        clearTimeout(ollamaTimeout);
+        clearTimeout(connectTimeout);
+        upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
 
         if (ollamaRes.ok && ollamaRes.body) {
           const reader = ollamaRes.body.getReader();
           const decoder = new TextDecoder();
           let hasOutput = false;
+          let ttftMs: number | null = null;
+          let totalChars = 0;
 
-          while (true) {
+          while (!clientClosed) {
             const { done, value } = await reader.read();
             if (done) break;
             const chunkText = decoder.decode(value, { stream: true });
@@ -137,36 +246,62 @@ async function startServer() {
               try {
                 const parsed = JSON.parse(line);
                 if (parsed.message?.content) {
-                  hasOutput = true;
-                  res.write(`data: ${JSON.stringify({ text: parsed.message.content })}\n\n`);
+                  const piece = String(parsed.message.content);
+                  if (!hasOutput) {
+                    hasOutput = true;
+                    ttftMs = Math.max(1, Date.now() - requestStart);
+                    writeEvent({
+                      meta: {
+                        provider: 'ollama',
+                        model: modelName,
+                        ttftMs
+                      }
+                    });
+                  }
+                  totalChars += piece.length;
+                  writeEvent({ text: piece });
                 }
               } catch {
-                // partial chunk
+                // partial json line
               }
             }
           }
 
+          if (clientClosed) {
+            reader.cancel().catch(() => {});
+            return;
+          }
+
           if (hasOutput) {
-            res.write('data: [DONE]\n\n');
-            res.end();
+            const elapsedMs = Math.max(1, Date.now() - requestStart);
+            const approxTokens = Math.max(1, Math.round(totalChars / 4));
+            const tokensPerSec = Number((approxTokens / (elapsedMs / 1000)).toFixed(1));
+            writeEvent({
+              stats: {
+                provider: 'ollama',
+                model: modelName,
+                ttftMs: ttftMs ?? elapsedMs,
+                elapsedMs,
+                tokensPerSec
+              }
+            });
+            endStream();
             return;
           }
         }
       } catch {
-        // Local Ollama not running; proceed to Gemini engine
+        if (clientClosed) return;
+        // Local Ollama unreachable; proceed to Gemini Cloud engine
       }
 
-      // 2. Stream via Gemini 3.8 Flash
+      // 2. Stream via Gemini Cloud (gemini-4-hydrogen)
       const ai = getAiClient();
       if (!ai) {
-        res.write(
-          `data: ${JSON.stringify({
-            fallback: true,
-            error: 'Local Ollama offline and no cloud API key configured.'
-          })}\n\n`
-        );
-        res.write('data: [DONE]\n\n');
-        res.end();
+        writeEvent({
+          error:
+            'Local Ollama is offline and no cloud Gemini API key is configured. Start Ollama locally or configure GEMINI_API_KEY in Settings > Secrets.'
+        });
+        endStream();
         return;
       }
 
@@ -186,36 +321,64 @@ async function startServer() {
         parts: [{ text: prompt }]
       });
 
+      const geminiStart = Date.now();
       const responseStream = await ai.models.generateContentStream({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_DEFAULT_MODEL,
         contents,
         config: {
           systemInstruction:
-            (systemInstruction
-              ? `${systemInstruction}\n\n`
-              : '') +
-            `You are J.A.R.V.I.S (active route: ${modelName}), a sharp, concise, and technically accurate personal AI assistant. Answer the user request directly and accurately. When asked for code in a specific language (such as Java, Python, C++, TypeScript, JavaScript, SQL, Rust, Go, etc.), always write complete, working, well-commented code in that exact requested language inside markdown code fences.`,
-          temperature: Number(temperature) || 0.7
+            (systemInstruction ? `${systemInstruction}\n\n` : '') +
+            `You are J.A.R.V.I.S (preferred route: ${modelName}), a sharp, concise, and technically accurate personal AI assistant. Answer the user request directly using clear Markdown formatting (headings, lists, tables, and language-tagged fenced code blocks when helpful). When asked for code in a specific language, provide complete, working code in that exact language.`
         }
       });
 
+      let ttftMs: number | null = null;
+      let totalChars = 0;
+
       for await (const chunk of responseStream) {
+        if (clientClosed) break;
         const c = chunk as GenerateContentResponse;
         const text = c.text;
         if (text) {
-          res.write(`data: ${JSON.stringify({ text })}\n\n`);
+          if (ttftMs === null) {
+            ttftMs = Math.max(1, Date.now() - geminiStart);
+            writeEvent({
+              meta: {
+                provider: 'gemini',
+                model: GEMINI_DEFAULT_MODEL,
+                ttftMs
+              }
+            });
+          }
+          totalChars += text.length;
+          writeEvent({ text });
         }
       }
 
-      res.write('data: [DONE]\n\n');
-      res.end();
+      if (clientClosed) return;
+
+      const elapsedMs = Math.max(1, Date.now() - geminiStart);
+      const approxTokens = Math.max(1, Math.round(totalChars / 4));
+      const tokensPerSec = Number((approxTokens / (elapsedMs / 1000)).toFixed(1));
+      writeEvent({
+        stats: {
+          provider: 'gemini',
+          model: GEMINI_DEFAULT_MODEL,
+          ttftMs: ttftMs ?? elapsedMs,
+          elapsedMs,
+          tokensPerSec
+        }
+      });
+
+      endStream();
     } catch (error: any) {
+      if (clientClosed) return;
       console.error('Chat stream error:', error);
-      const errMsg = error?.message || 'Failed to generate response';
+      const errMsg = error?.message || 'Failed to generate response from AI engine.';
       if (!res.headersSent) {
         res.status(500).json({ error: errMsg });
       } else {
-        res.write(`data: ${JSON.stringify({ fallback: true, error: errMsg })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: errMsg })}\n\n`);
         res.write('data: [DONE]\n\n');
         res.end();
       }
@@ -270,7 +433,7 @@ async function startServer() {
         }
       }
 
-      // 2. Gemini 3.8 Flash Vision
+      // 2. Gemini Cloud Vision (gemini-4-hydrogen)
       const ai = getAiClient();
       if (!ai) {
         res.status(200).json({ summary: null, fallback: true });
@@ -278,7 +441,7 @@ async function startServer() {
       }
 
       const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_DEFAULT_MODEL,
         contents: {
           parts: [
             {
@@ -304,6 +467,109 @@ async function startServer() {
     }
   });
 
+  // ============================================================================
+  // Xfill Document Auto-Fill Endpoints (DOCX / XLSX / PPTX)
+  // ============================================================================
+
+  app.post('/api/jarvis/xfill/inspect', async (req, res) => {
+    try {
+      const { fileName, fileBase64 } = req.body || {};
+      if (!fileName || typeof fileName !== 'string' || !fileBase64 || typeof fileBase64 !== 'string') {
+        res.status(400).json({ error: 'fileName and fileBase64 are required.' });
+        return;
+      }
+      const buffer = Buffer.from(fileBase64, 'base64');
+      if (buffer.length > 12 * 1024 * 1024) {
+        res.status(413).json({ error: 'File exceeds the 12 MB limit.' });
+        return;
+      }
+      const inspected = await inspectAndCacheDocument(fileName, buffer);
+      res.json(inspected);
+    } catch (error: any) {
+      console.error('Xfill inspect error:', error);
+      res.status(400).json({ error: error?.message || 'Could not parse the uploaded document.' });
+    }
+  });
+
+  app.get('/api/jarvis/xfill/sample', async (req, res) => {
+    try {
+      const rawType = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : 'docx';
+      const type: XfillFileType =
+        rawType === 'xlsx' || rawType === 'pptx' ? rawType : 'docx';
+      const sample = await generateSampleDocument(type);
+      const inspected = await inspectAndCacheDocument(sample.fileName, sample.buffer);
+      res.json(inspected);
+    } catch (error: any) {
+      console.error('Xfill sample error:', error);
+      res.status(500).json({ error: error?.message || 'Failed to generate sample document.' });
+    }
+  });
+
+  app.post('/api/jarvis/xfill/solve', async (req, res) => {
+    try {
+      const {
+        docId,
+        slotIds,
+        memory = {},
+        contextNotes = '',
+        strictGrounding = false,
+        answerStyle = 'concise',
+        customInstructions = '',
+        modelName = 'qwen2.5:3b',
+        ollamaHost = 'http://127.0.0.1:11434',
+        keepAliveMinutes = 30
+      } = req.body || {};
+
+      if (!docId || typeof docId !== 'string') {
+        res.status(400).json({ error: 'docId is required.' });
+        return;
+      }
+
+      const solved = await solveDocumentSlots(
+        docId,
+        {
+          memory,
+          contextNotes,
+          strictGrounding: Boolean(strictGrounding),
+          answerStyle:
+            answerStyle === 'detailed' || answerStyle === 'bullets' ? answerStyle : 'concise',
+          customInstructions,
+          modelName,
+          ollamaHost,
+          keepAliveMinutes: Number(keepAliveMinutes) || 30,
+          slotIds: Array.isArray(slotIds) ? slotIds : undefined
+        },
+        getAiClient()
+      );
+
+      res.json(solved);
+    } catch (error: any) {
+      console.error('Xfill solve error:', error);
+      res.status(500).json({ error: error?.message || 'Failed to solve document fields.' });
+    }
+  });
+
+  app.post('/api/jarvis/xfill/export', async (req, res) => {
+    try {
+      const { docId, answers = {} } = req.body || {};
+      if (!docId || typeof docId !== 'string') {
+        res.status(400).json({ error: 'docId is required.' });
+        return;
+      }
+
+      const exported = await exportFilledDocument(docId, answers);
+      res.setHeader('Content-Type', exported.mimeType);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${exported.fileName.replace(/"/g, '')}"`
+      );
+      res.send(exported.buffer);
+    } catch (error: any) {
+      console.error('Xfill export error:', error);
+      res.status(400).json({ error: error?.message || 'Failed to export updated document.' });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -320,8 +586,14 @@ async function startServer() {
   }
 
   const PORT = 3000;
+  const bootAttribution = verifyServerAttribution();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`J.A.R.V.I.S server running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[Attribution] ${bootAttribution.short} · Seal ${bootAttribution.seal} · ${
+        bootAttribution.verified ? 'VERIFIED' : 'INTEGRITY WARNING (LICENSE/NOTICE modified)'
+      }`
+    );
   });
 }
 

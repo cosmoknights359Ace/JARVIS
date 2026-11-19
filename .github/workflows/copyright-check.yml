@@ -1,0 +1,21 @@
+name: Copyright & Attribution Integrity Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify-copyright:
+    name: Verify Creator Attribution (vinod, 2026)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify Copyright Management Information & Seal
+        run: node scripts/verify-attribution.mjs

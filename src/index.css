@@ -81,6 +81,14 @@
   animation: triangleCoreBreath 3s ease-in-out infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-triangle-fade,
+  .animate-triangle-inner,
+  .animate-triangle-core {
+    animation: none;
+  }
+}
+
 /* Crisp Black & Orange Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send,
   Square,
@@ -13,13 +13,19 @@ import {
   Terminal,
   Trash2,
   Radio,
-  Command
+  Command,
+  Volume2,
+  VolumeX,
+  Pencil,
+  ArrowDown,
+  AlertTriangle
 } from 'lucide-react';
 import { ChatMessage, JarvisSettings, MemoryStore, SystemStats } from '../types';
 import { QUICK_SLASH_COMMANDS, QuickSlashCommand } from '../services/jarvisBrain';
-import { DictationService } from '../services/speech';
+import { DictationService, SpeechService } from '../services/speech';
 import { sfx } from '../services/soundEffects';
 import { ArcReactor } from './ArcReactor';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -27,6 +33,7 @@ interface ChatViewProps {
   onSendMessage: (text: string) => void;
   onStopStreaming: () => void;
   onRegenerate: () => void;
+  onEditMessage: (messageId: string, newText: string) => void;
   onExportChat: () => void;
   onClearScreen: () => void;
   onOpenVision: () => void;
@@ -47,6 +54,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSendMessage,
   onStopStreaming,
   onRegenerate,
+  onEditMessage,
   onExportChat,
   onClearScreen,
   onOpenVision,
@@ -63,25 +71,70 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
   const [quickMemKey, setQuickMemKey] = useState('');
   const [quickMemVal, setQuickMemVal] = useState('');
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   // Input history buffer (Up/Down arrow key support)
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const userHistoryRef = useRef<string[]>([]);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+
+  // Auto-grow textarea smoothly up to 180px
+  const resizeTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, []);
 
   useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
-  }, [messages, isStreaming]);
+    resizeTextarea();
+  }, [inputText, resizeTextarea]);
 
-  // Slash command filtering when input starts with "/"
-  const isSlashActive = inputText.startsWith('/');
+  // Smart auto-scroll: only stick to bottom if user hasn't scrolled up to read earlier messages
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el || !isNearBottom) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, isStreaming, isNearBottom]);
+
+  // Close attach menu on outside click
+  useEffect(() => {
+    if (!showAttachMenu) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setShowAttachMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [showAttachMenu]);
+
+  const handleScroll = () => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsNearBottom(distanceFromBottom < 80);
+  };
+
+  const scrollToLatest = () => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    setIsNearBottom(true);
+  };
+
+  // Slash command filtering when single-line input starts with "/"
+  const isSlashActive = inputText.startsWith('/') && !inputText.includes('\n');
   const filteredSlashCommands = isSlashActive
     ? QUICK_SLASH_COMMANDS.filter(
         (c) =>
@@ -90,13 +143,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )
     : [];
 
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [inputText]);
+
   const triggerQuickCommand = (cmd: QuickSlashCommand) => {
     sfx.playClick();
     if (cmd.needsArg && cmd.placeholder) {
       setInputText(cmd.placeholder);
-      inputRef.current?.focus();
+      requestAnimationFrame(() => textareaRef.current?.focus());
     } else {
       setInputText('');
+      setIsNearBottom(true);
       onSendMessage(cmd.command);
     }
   };
@@ -109,18 +167,49 @@ export const ChatView: React.FC<ChatViewProps> = ({
     userHistoryRef.current.push(trimmed);
     setHistoryIndex(-1);
     setInputText('');
+    setIsNearBottom(true);
     onSendMessage(trimmed);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (isSlashActive && filteredSlashCommands.length === 1) {
-        triggerQuickCommand(filteredSlashCommands[0]);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Slash menu keyboard navigation
+    if (isSlashActive && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashIndex((prev) => (prev + 1) % filteredSlashCommands.length);
         return;
       }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashIndex(
+          (prev) => (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+        );
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault();
+        triggerQuickCommand(filteredSlashCommands[slashIndex] || filteredSlashCommands[0]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInputText('');
+        return;
+      }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       handleSend();
-    } else if (e.key === 'ArrowUp') {
+      return;
+    }
+
+    const el = e.currentTarget;
+    const isAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
+    const isAtEnd =
+      el.selectionStart === inputText.length && el.selectionEnd === inputText.length;
+
+    if (e.key === 'ArrowUp' && isAtStart && !inputText.includes('\n')) {
       if (userHistoryRef.current.length === 0) return;
       e.preventDefault();
       const nextIdx =
@@ -129,8 +218,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
           : Math.max(0, historyIndex - 1);
       setHistoryIndex(nextIdx);
       setInputText(userHistoryRef.current[nextIdx]);
-    } else if (e.key === 'ArrowDown') {
-      if (userHistoryRef.current.length === 0 || historyIndex === -1) return;
+    } else if (e.key === 'ArrowDown' && isAtEnd && historyIndex !== -1) {
+      if (userHistoryRef.current.length === 0) return;
       e.preventDefault();
       const nextIdx = historyIndex + 1;
       if (nextIdx >= userHistoryRef.current.length) {
@@ -140,7 +229,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setHistoryIndex(nextIdx);
         setInputText(userHistoryRef.current[nextIdx]);
       }
-    } else if (e.key === 'Escape') {
+    } else if (e.key === 'Escape' && inputText) {
       setInputText('');
       setHistoryIndex(-1);
     }
@@ -170,130 +259,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const copyCode = (code: string, id: string) => {
-    navigator.clipboard.writeText(code);
-    setCopiedCodeId(id);
-    setTimeout(() => setCopiedCodeId(null), 2000);
+  const handleCopyMessage = (content: string, id: string) => {
+    navigator.clipboard.writeText(content).catch(() => {});
+    setCopiedMsgId(id);
+    setTimeout(() => setCopiedMsgId(null), 1800);
   };
 
-  const formatInlineHtml = (rawLine: string): string => {
-    const escaped = rawLine
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-
-    return escaped
-      .replace(
-        /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-orange-400 underline hover:text-orange-300 font-medium">$1</a>'
-      )
-      .replace(
-        /\*\*([^*]+)\*\*/g,
-        '<strong class="font-semibold text-white">$1</strong>'
-      )
-      .replace(
-        /`([^`]+)`/g,
-        '<code class="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono text-xs text-orange-400">$1</code>'
-      );
-  };
-
-  const renderMessageContent = (text: string, msgId: string) => {
-    if (!text) {
-      return (
-        <div className="flex items-center gap-2 text-xs text-orange-400 font-mono py-1">
-          <span className="inline-block w-2 h-2 rounded-full bg-orange-500 animate-ping" />
-          <span>Synthesizing response...</span>
-        </div>
-      );
+  const handleSpeakMessage = (msg: ChatMessage) => {
+    if (speakingMsgId === msg.id) {
+      SpeechService.stop();
+      setSpeakingMsgId(null);
+      return;
     }
-
-    // If a code fence is currently streaming and unclosed, close it virtually so live syntax box renders cleanly
-    const fenceCount = (text.match(/```/g) || []).length;
-    const normalizedText = fenceCount % 2 === 1 ? `${text}\n\`\`\`` : text;
-    const parts = normalizedText.split(/(```[\s\S]*?```)/g);
-
-    return parts.map((part, idx) => {
-      if (part.startsWith('```') && part.endsWith('```')) {
-        const rawContent = part.slice(3, -3);
-        const firstLineEnd = rawContent.indexOf('\n');
-        const lang = firstLineEnd !== -1 ? rawContent.slice(0, firstLineEnd).trim() : '';
-        const code = firstLineEnd !== -1 ? rawContent.slice(firstLineEnd + 1) : rawContent;
-        const codeBlockId = `${msgId}-${idx}`;
-
-        return (
-          <div
-            key={idx}
-            className="my-3 rounded-xl overflow-hidden border border-zinc-800 bg-[#070709]"
-          >
-            <div className="flex items-center justify-between px-4 py-2 bg-zinc-900/90 border-b border-zinc-800 text-xs text-zinc-400 font-mono">
-              <span className="text-orange-400">{lang || 'code'}</span>
-              <button
-                onClick={() => copyCode(code, codeBlockId)}
-                className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-orange-400 transition-colors"
-                title="Copy code snippet"
-              >
-                {copiedCodeId === codeBlockId ? (
-                  <>
-                    <Check size={13} className="text-emerald-400" />
-                    <span className="text-emerald-400">Copied</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy size={13} />
-                    <span>Copy</span>
-                  </>
-                )}
-              </button>
-            </div>
-            <pre className="p-4 overflow-x-auto text-xs font-mono text-zinc-200 leading-relaxed">
-              <code>{code}</code>
-            </pre>
-          </div>
-        );
-      }
-
-      const lines = part.split('\n');
-      return (
-        <div key={idx} className="space-y-1.5">
-          {lines.map((line, lIdx) => {
-            if (!line.trim()) return <div key={lIdx} className="h-1" />;
-
-            if (line.startsWith('### ')) {
-              return (
-                <h3
-                  key={lIdx}
-                  className="text-sm font-display font-semibold text-orange-400 pt-2"
-                >
-                  {line.slice(4)}
-                </h3>
-              );
-            }
-
-            if (line.startsWith('## ')) {
-              return (
-                <h2
-                  key={lIdx}
-                  className="text-base font-display font-bold text-orange-400 pt-2"
-                >
-                  {line.slice(3)}
-                </h2>
-              );
-            }
-
-            return (
-              <p
-                key={lIdx}
-                className="text-sm text-zinc-200 leading-relaxed"
-                dangerouslySetInnerHTML={{
-                  __html: formatInlineHtml(line)
-                }}
-              />
-            );
-          })}
-        </div>
-      );
+    setSpeakingMsgId(msg.id);
+    SpeechService.speak(msg.content, {
+      voiceName: settings.preferredVoice,
+      rate: settings.voiceRate,
+      pitch: settings.voicePitch,
+      onEnd: () => setSpeakingMsgId(null),
+      onError: () => setSpeakingMsgId(null)
     });
+  };
+
+  const stopAllSpeech = () => {
+    SpeechService.stop();
+    setSpeakingMsgId(null);
+  };
+
+  const startEditMessage = (msg: ChatMessage) => {
+    setEditingMsgId(msg.id);
+    setEditingText(msg.content);
+  };
+
+  const commitEditMessage = () => {
+    if (!editingMsgId) return;
+    const trimmed = editingText.trim();
+    if (!trimmed || isStreaming) return;
+    const targetId = editingMsgId;
+    setEditingMsgId(null);
+    setEditingText('');
+    setIsNearBottom(true);
+    onEditMessage(targetId, trimmed);
   };
 
   const modelChoices = Array.from(
@@ -311,67 +317,75 @@ export const ChatView: React.FC<ChatViewProps> = ({
     sfx.playCommandConfirm();
   };
 
-  // Claude-Style Futuristic Composer Box (shared between centered empty state and bottom docked state)
+  const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assist')?.id;
+
   const renderComposerCard = () => (
-    <div className="w-full max-w-3xl mx-auto space-y-2.5 relative z-20">
-      {/* Floating Slash-Command Autocomplete Menu when user types "/" */}
+    <div className="w-full max-w-3xl mx-auto space-y-2 relative z-20">
+      {/* Keyboard-Navigable Slash-Command Autocomplete Menu */}
       {isSlashActive && filteredSlashCommands.length > 0 && (
         <div className="w-full rounded-xl bg-[#0F0F13] border border-orange-500/40 shadow-2xl overflow-hidden divide-y divide-zinc-800/80 mb-2">
           <div className="px-3.5 py-2 bg-zinc-900/80 text-[11px] font-mono text-orange-400 flex items-center justify-between">
-            <span>QUICK SLASH COMMANDS</span>
-            <span>Click or press Enter</span>
+            <span>Slash Commands</span>
+            <span className="text-zinc-500">↑↓ navigate · Enter or Tab to run</span>
           </div>
           <div className="max-h-56 overflow-y-auto divide-y divide-zinc-900">
-            {filteredSlashCommands.map((cmd) => (
-              <button
-                key={cmd.slash}
-                onClick={() => triggerQuickCommand(cmd)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-orange-500/10 text-left transition-colors"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <code className="font-mono text-xs font-semibold text-orange-400 w-24 shrink-0">
-                    {cmd.slash}
-                  </code>
-                  <span className="text-xs font-medium text-zinc-200 truncate">
-                    {cmd.label}
+            {filteredSlashCommands.map((cmd, idx) => {
+              const highlighted = idx === slashIndex;
+              return (
+                <button
+                  type="button"
+                  key={cmd.slash}
+                  onMouseEnter={() => setSlashIndex(idx)}
+                  onClick={() => triggerQuickCommand(cmd)}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 text-left transition-colors ${
+                    highlighted ? 'bg-orange-500/15' : 'hover:bg-orange-500/10'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <code className="font-mono text-xs font-semibold text-orange-400 w-24 shrink-0">
+                      {cmd.slash}
+                    </code>
+                    <span className="text-xs font-medium text-zinc-200 truncate">
+                      {cmd.label}
+                    </span>
+                    <span className="text-xs text-zinc-500 hidden sm:inline truncate">
+                      — {cmd.description}
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono text-zinc-500 shrink-0">
+                    {highlighted ? 'Enter ↵' : 'Run'}
                   </span>
-                  <span className="text-xs text-zinc-500 hidden sm:inline truncate">
-                    — {cmd.description}
-                  </span>
-                </div>
-                <span className="text-[11px] font-mono text-zinc-500 shrink-0">
-                  Run ↵
-                </span>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Claude-style Elevated Composer Surface */}
+      {/* Multi-Line Elevated Composer Surface */}
       <div className="rounded-2xl bg-[#111115] border border-zinc-800/90 focus-within:border-orange-500/70 shadow-2xl p-3 transition-colors">
-        {/* Input Row */}
-        <div className="flex items-center gap-2 px-1 py-1">
-          <Terminal size={16} className="text-orange-500 shrink-0" />
-          <input
+        <div className="flex items-start gap-2.5 px-1 py-1">
+          <Terminal size={16} className="text-orange-500 shrink-0 mt-1" />
+          <textarea
             id="chatInput"
-            ref={inputRef}
-            type="text"
+            ref={textareaRef}
+            rows={1}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message J.A.R.V.I.S or type / for instant commands..."
+            placeholder="Message J.A.R.V.I.S, paste code, or type / for commands..."
             autoComplete="off"
-            className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
+            className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none resize-none leading-relaxed max-h-44 overflow-y-auto"
           />
         </div>
 
         {/* Bottom Composer Control Strip */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 mt-2 border-t border-zinc-800/80">
-          {/* Left Controls: Attach + Quick Slash Trigger + Hands-Free */}
+          {/* Left Controls */}
           <div className="flex items-center gap-1.5">
-            <div className="relative">
+            <div className="relative" ref={attachMenuRef}>
               <button
+                type="button"
                 onClick={() => setShowAttachMenu(!showAttachMenu)}
                 className="p-1.5 rounded-lg text-zinc-400 hover:text-orange-400 hover:bg-zinc-900 transition-colors"
                 title="Tools & Actions"
@@ -383,6 +397,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               {showAttachMenu && (
                 <div className="absolute bottom-10 left-0 w-52 rounded-xl bg-[#111115] border border-zinc-800 shadow-2xl p-1.5 z-30 space-y-0.5">
                   <button
+                    type="button"
                     onClick={() => {
                       setShowAttachMenu(false);
                       onOpenVision();
@@ -393,6 +408,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Vision Frame Analyzer</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setShowAttachMenu(false);
                       onRegenerate();
@@ -403,6 +419,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Regenerate Reply</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setShowAttachMenu(false);
                       onExportChat();
@@ -413,6 +430,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Export Session (.md)</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setShowAttachMenu(false);
                       onClearScreen();
@@ -420,18 +438,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800 transition-colors text-left"
                   >
                     <Trash2 size={14} className="text-orange-500" />
-                    <span>Reset Screen</span>
+                    <span>Clear Chat</span>
                   </button>
                 </div>
               )}
             </div>
 
             <button
+              type="button"
               onClick={() => {
                 setInputText('/');
-                inputRef.current?.focus();
+                textareaRef.current?.focus();
               }}
-              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-mono text-orange-400 flex items-center gap-1 transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-mono text-orange-400 flex items-center gap-1 transition-colors whitespace-nowrap"
               title="Open Slash Command Menu"
             >
               <Command size={12} />
@@ -439,13 +458,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() =>
                 onUpdateSettings({
                   ...settings,
                   handsFreeMode: !settings.handsFreeMode
                 })
               }
-              className={`px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1.5 transition-colors ${
+              className={`px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                 settings.handsFreeMode
                   ? 'bg-orange-500/15 border-orange-500/40 text-orange-400 font-medium'
                   : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
@@ -457,6 +477,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 Hands-Free: {settings.handsFreeMode ? 'On' : 'Off'}
               </span>
             </button>
+
+            {speakingMsgId && (
+              <button
+                type="button"
+                onClick={stopAllSpeech}
+                className="px-2.5 py-1 rounded-lg bg-orange-500/15 border border-orange-500/40 text-orange-300 text-xs flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                title="Stop voice playback"
+              >
+                <VolumeX size={12} />
+                <span>Stop Audio</span>
+              </button>
+            )}
           </div>
 
           {/* Right Controls: Model Route + Mic + Send/Stop */}
@@ -465,7 +497,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               value={selectedModel}
               onChange={(e) => onSelectModel(e.target.value)}
               aria-label="Select AI Model"
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 shrink-0"
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[175px] truncate shrink-0"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
@@ -475,6 +507,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </select>
 
             <button
+              type="button"
               onClick={toggleMic}
               title={isListening ? 'Stop listening' : 'Voice dictation'}
               aria-label="Voice dictation"
@@ -489,20 +522,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             {isStreaming ? (
               <button
+                type="button"
                 id="stopBtn"
                 onClick={onStopStreaming}
-                title="Stop generation"
-                className="px-3.5 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0"
+                title="Abort active generation"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0 whitespace-nowrap"
               >
                 <Square size={12} className="fill-current" />
                 <span>Stop</span>
               </button>
             ) : (
               <button
+                type="button"
                 id="sendBtn"
                 onClick={handleSend}
+                disabled={!inputText.trim()}
                 title="Send message (Enter)"
-                className="px-3.5 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0"
+                className="px-3.5 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-40 disabled:hover:bg-orange-500 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0 whitespace-nowrap"
               >
                 <Send size={12} />
                 <span>Send</span>
@@ -512,21 +548,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
-      {/* 1-Click Easy Command Action Strip */}
-      <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-1">
-        {QUICK_SLASH_COMMANDS.slice(0, 8).map((cmd) => (
-          <button
-            key={cmd.slash}
-            onClick={() => triggerQuickCommand(cmd)}
-            className="px-2.5 py-1 rounded-lg bg-[#111115] hover:bg-orange-500/15 border border-zinc-800/90 hover:border-orange-500/40 text-xs font-mono text-zinc-300 hover:text-orange-400 transition-colors whitespace-nowrap shrink-0"
-            title={cmd.description}
-          >
-            {cmd.slash}
-          </button>
-        ))}
+      {/* Quiet Single-Line Keyboard Hint */}
+      <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500">
+        <span>Enter to send · Shift+Enter for new line · Type / for commands</span>
+        <span className="hidden sm:inline font-mono">Ctrl+K Guide</span>
       </div>
     </div>
   );
+
+  const providerSummary =
+    stats.activeProvider === 'ollama'
+      ? `Local Ollama (${stats.resolvedModel})`
+      : stats.activeProvider === 'gemini'
+      ? `Gemini Cloud · route ${stats.resolvedModel}`
+      : 'Engine offline';
 
   return (
     <div className="flex-1 flex min-h-0 bg-[#070709] relative">
@@ -540,22 +575,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         {messages.length === 0 ? (
-          /* Claude AI-Style Centered Futuristic Stage when Session is Fresh */
-          <div className="flex-1 overflow-y-auto px-6 py-8 flex flex-col items-center justify-center relative z-10">
+          /* Centered Zero-State Stage when Session is Fresh */
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-8 flex flex-col items-center justify-center relative z-10">
             <div className="w-full max-w-3xl mx-auto flex flex-col items-center text-center space-y-6">
-              {/* Centerpiece Fade-In / Fade-Out Orange Triangle */}
-              <ArcReactor size={156} pulsing={true} />
+              <ArcReactor size={150} pulsing={true} />
 
               <div className="space-y-1.5">
-                <h1 className="text-2xl sm:text-3xl font-display font-bold text-zinc-100 tracking-tight">
+                <h1 className="text-2xl sm:text-3xl font-display font-bold text-zinc-100 tracking-tight text-balance">
                   At your service, Sir.
                 </h1>
                 <p className="text-xs sm:text-sm text-zinc-400 max-w-lg mx-auto">
-                  Active route: <code className="font-mono text-orange-400">{stats.resolvedModel}</code> · Click any command below or type <code className="font-mono text-orange-400">/</code> for instant actions.
+                  Engine: <code className="font-mono text-orange-400">{providerSummary}</code>
+                  {stats.probeLatencyMs !== null && (
+                    <>
+                      {' '}· <span className="font-mono tabular-nums">{stats.probeLatencyMs}ms ping</span>
+                    </>
+                  )}
                 </p>
               </div>
 
-              {/* Centered Claude-Style Composer */}
               {renderComposerCard()}
             </div>
           </div>
@@ -565,17 +603,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div
               id="chatScroll"
               ref={chatScrollRef}
-              className="flex-1 overflow-y-auto px-6 py-6 space-y-6 relative z-10"
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6 relative z-10"
             >
               <div className="max-w-3xl mx-auto space-y-6">
                 {messages.map((m) => {
                   const isUser = m.role === 'user';
+                  const isEditingThis = editingMsgId === m.id;
+                  const isLatestAssist = !isUser && m.id === lastAssistantId;
+
                   return (
                     <div
                       key={m.id}
-                      className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+                      className={`group flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                     >
-                      <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1.5 px-1">
+                      {/* Unboxed Metadata Header (Zero Pills) */}
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 mb-1.5 px-1">
                         <span className="font-semibold text-zinc-300">
                           {isUser ? 'You' : 'J.A.R.V.I.S'}
                         </span>
@@ -585,37 +628,200 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             <span className="font-mono text-orange-400">{m.model}</span>
                           </>
                         )}
+                        {!isUser && typeof m.ttftMs === 'number' && m.ttftMs > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono tabular-nums text-zinc-400">
+                              {m.ttftMs}ms
+                            </span>
+                          </>
+                        )}
+                        {!isUser && typeof m.tokensPerSec === 'number' && m.tokensPerSec > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono tabular-nums text-zinc-400">
+                              {m.tokensPerSec} tok/s
+                            </span>
+                          </>
+                        )}
                         <span aria-hidden="true">·</span>
                         <span className="font-mono tabular-nums">{m.timestamp}</span>
                       </div>
 
+                      {/* Message Bubble / Card */}
                       <div
-                        className={`max-w-2xl rounded-2xl px-4 py-3.5 border ${
+                        className={`rounded-2xl px-4 py-3.5 border ${
                           isUser
-                            ? 'bg-orange-500/10 border-orange-500/35 text-zinc-100'
-                            : 'bg-[#111115]/95 border-zinc-800/90 text-zinc-200 w-full backdrop-blur-xs'
+                            ? 'max-w-2xl bg-orange-500/10 border-orange-500/35 text-zinc-100'
+                            : m.isError
+                            ? 'w-full bg-rose-500/10 border-rose-500/35 text-rose-200'
+                            : 'w-full bg-[#111115]/95 border-zinc-800/90 text-zinc-200 backdrop-blur-xs'
                         }`}
                       >
                         {isUser ? (
-                          <p className="text-sm leading-relaxed">{m.content}</p>
+                          isEditingThis ? (
+                            <div className="space-y-2.5 min-w-[260px] sm:min-w-[380px]">
+                              <textarea
+                                value={editingText}
+                                onChange={(e) => setEditingText(e.target.value)}
+                                rows={3}
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    commitEditMessage();
+                                  } else if (e.key === 'Escape') {
+                                    setEditingMsgId(null);
+                                  }
+                                }}
+                                className="w-full bg-[#070709] border border-zinc-700 focus:border-orange-500 rounded-xl p-2.5 text-sm text-zinc-100 focus:outline-none resize-y"
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingMsgId(null)}
+                                  className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-medium transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={commitEditMessage}
+                                  disabled={!editingText.trim() || isStreaming}
+                                  className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-black text-xs font-semibold transition-colors"
+                                >
+                                  Save & Resend
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                              {m.content}
+                            </p>
+                          )
+                        ) : m.isError ? (
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-start gap-2.5 text-xs leading-relaxed">
+                              <AlertTriangle size={15} className="text-rose-400 shrink-0 mt-0.5" />
+                              <span>{m.content}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={onRegenerate}
+                              disabled={isStreaming}
+                              className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-semibold flex items-center gap-1.5 self-start sm:self-center shrink-0 transition-colors"
+                            >
+                              <RefreshCw size={12} />
+                              <span>Retry</span>
+                            </button>
+                          </div>
                         ) : (
-                          renderMessageContent(m.content, m.id)
+                          <MarkdownRenderer content={m.content} messageId={m.id} />
                         )}
                       </div>
+
+                      {/* Per-Message Action Bar */}
+                      {!isEditingThis && m.content && (
+                        <div className="flex items-center gap-1 mt-1.5 px-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(m.content, m.id)}
+                            className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 flex items-center gap-1 transition-colors"
+                            title="Copy message"
+                          >
+                            {copiedMsgId === m.id ? (
+                              <>
+                                <Check size={12} className="text-emerald-400" />
+                                <span className="text-emerald-400">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={12} />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+
+                          {isUser ? (
+                            <button
+                              type="button"
+                              onClick={() => startEditMessage(m)}
+                              disabled={isStreaming}
+                              className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                              title="Edit and resend"
+                            >
+                              <Pencil size={12} />
+                              <span>Edit</span>
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleSpeakMessage(m)}
+                                className={`px-2 py-1 rounded-md text-[11px] flex items-center gap-1 transition-colors ${
+                                  speakingMsgId === m.id
+                                    ? 'text-orange-400 bg-orange-500/10'
+                                    : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+                                }`}
+                                title={speakingMsgId === m.id ? 'Stop speaking' : 'Read aloud'}
+                              >
+                                {speakingMsgId === m.id ? (
+                                  <>
+                                    <VolumeX size={12} />
+                                    <span>Stop</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Volume2 size={12} />
+                                    <span>Speak</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {isLatestAssist && !m.isError && (
+                                <button
+                                  type="button"
+                                  onClick={onRegenerate}
+                                  disabled={isStreaming}
+                                  className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                                  title="Regenerate response"
+                                >
+                                  <RefreshCw size={12} />
+                                  <span>Regenerate</span>
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="px-6 pb-4 pt-2 bg-[#070709]/95 border-t border-zinc-900 relative z-20">
+            {/* Floating Jump-to-Latest Button when Scrolled Up */}
+            {!isNearBottom && (
+              <div className="absolute bottom-36 left-1/2 -translate-x-1/2 z-30">
+                <button
+                  type="button"
+                  onClick={scrollToLatest}
+                  className="px-3.5 py-1.5 rounded-full bg-[#111115] hover:bg-zinc-900 border border-orange-500/40 text-xs font-medium text-orange-400 shadow-xl flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <ArrowDown size={13} />
+                  <span>Jump to latest</span>
+                </button>
+              </div>
+            )}
+
+            <div className="px-4 sm:px-6 pb-4 pt-2 bg-[#070709]/95 border-t border-zinc-900 relative z-20">
               {renderComposerCard()}
             </div>
           </>
         )}
       </section>
 
-      {/* Right-Hand Command & Memory Dock */}
+      {/* Right-Hand Memory & Quick Commands Dock (xl+) */}
       {showInspector && (
         <aside className="hidden xl:flex w-80 shrink-0 bg-[#0A0A0D] border-l border-zinc-900 flex-col justify-between p-4 overflow-y-auto z-20">
           <div className="space-y-6">
@@ -673,6 +879,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <div className="text-zinc-400 truncate">{v}</div>
                     </div>
                     <button
+                      type="button"
                       onClick={() => {
                         const next = { ...memory };
                         delete next[k];
@@ -680,6 +887,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       }}
                       className="text-zinc-600 hover:text-rose-400 p-1 transition-colors shrink-0"
                       title="Delete memory"
+                      aria-label={`Delete ${k}`}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -692,9 +900,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-display font-semibold text-zinc-200">
-                  1-Click Commands
+                  Quick Commands
                 </h3>
                 <button
+                  type="button"
                   onClick={onOpenCapabilities}
                   className="text-[11px] text-orange-400 hover:underline"
                 >
@@ -704,11 +913,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 {QUICK_SLASH_COMMANDS.slice(0, 6).map((btn) => (
                   <button
+                    type="button"
                     key={btn.slash}
                     onClick={() => triggerQuickCommand(btn)}
+                    title={btn.description}
                     className="px-2.5 py-2 rounded-lg bg-[#070709] hover:bg-zinc-900 border border-zinc-800/90 hover:border-orange-500/40 text-xs text-zinc-300 text-left truncate transition-colors"
                   >
-                    <span className="font-mono text-orange-400 mr-1">{btn.slash}</span>
+                    <span className="font-mono text-orange-400">{btn.slash}</span>
                   </button>
                 ))}
               </div>

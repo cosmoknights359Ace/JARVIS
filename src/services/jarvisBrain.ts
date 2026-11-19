@@ -1,4 +1,4 @@
-import { MemoryStore, JarvisSettings, ChatMessage } from '../types';
+import { MemoryStore, JarvisSettings, ChatMessage, EngineProvider, SystemStats } from '../types';
 import { getShort } from './attribution';
 
 export const CODING_KEYWORDS = [
@@ -22,7 +22,7 @@ export const QUICK_SLASH_COMMANDS: QuickSlashCommand[] = [
     slash: '/status',
     command: 'system status',
     label: 'System Status',
-    description: 'Check active AI model route, memory count, and local engine link'
+    description: 'Check active AI provider, latency, memory count, and route'
   },
   {
     slash: '/memory',
@@ -159,8 +159,8 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
     items: [
       {
         command: 'system status',
-        label: 'Engine & Telemetry Status',
-        description: 'Checks Ollama status, active model route, and memory count.',
+        label: 'Engine & Latency Diagnostics',
+        description: 'Checks active engine provider, probe latency, model route, and memory count.',
         example: '/status or system status'
       },
       {
@@ -223,12 +223,12 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
   {
     id: 'coding',
     title: 'Sticky Auto-Routed AI & Coding',
-    subtitle: 'Automatically switches between qwen2.5:3b (fast) and qwen2.5-coder:7b (code).',
+    subtitle: 'Automatically switches between fast general and coder models for 3 turns.',
     items: [
       {
         command: 'Write a clean Python async task queue with worker pool and retry logic',
         label: 'Generate Python Async Queue',
-        description: 'Triggers sticky routing to qwen2.5-coder:7b with syntax-highlighted output.',
+        description: 'Triggers sticky routing to coder model with syntax-highlighted output.',
         example: 'Write a Python script...'
       },
       {
@@ -256,7 +256,7 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
 export const HELP_TEXT = `J.A.R.V.I.S Quick Command Guide:
 
 Slash & Natural Commands:
-- /status   or  system status         (Engine & routing diagnostics)
+- /status   or  system status         (Engine provider & latency diagnostics)
 - /memory   or  show memory           (List all stored facts)
 - /remember or  remember key=value    (Save a persistent fact)
 - /recall   or  recall key            (Retrieve a saved fact)
@@ -274,7 +274,7 @@ Web & Shortcuts:
 - shutdown pc / restart pc (with yes/no confirmation gate)
 
 Model Routing:
-- "auto" routes between fast (qwen2.5:3b) and coder (qwen2.5-coder:7b) and stays sticky for 3 turns.
+- "auto" routes between fast and coder models and stays sticky for 3 turns.
 
 Attribution:
 - ${getShort()} — Free to use, study, modify, and redistribute with creator credit retained.`;
@@ -286,6 +286,42 @@ export interface CommandResult {
   speakText?: string;
   actionPayload?: any;
 }
+
+export interface HealthProbeResult {
+  reachable: boolean;
+  models: string[];
+  geminiAvailable: boolean;
+  activeProvider: EngineProvider;
+  probeLatencyMs: number | null;
+  serverUptimeSec: number | null;
+  attributionVerified: boolean;
+  attributionSeal: string;
+  licenseFileIntact: boolean;
+}
+
+export type JarvisStreamEvent =
+  | {
+      type: 'meta';
+      provider: 'ollama' | 'gemini';
+      model: string;
+      ttftMs: number;
+    }
+  | {
+      type: 'text';
+      content: string;
+    }
+  | {
+      type: 'stats';
+      provider: 'ollama' | 'gemini';
+      model: string;
+      ttftMs: number;
+      elapsedMs: number;
+      tokensPerSec: number;
+    }
+  | {
+      type: 'error';
+      message: string;
+    };
 
 export class JarvisRouter {
   private stickyCount = 0;
@@ -325,26 +361,60 @@ export function buildSystemPrompt(memory: MemoryStore): string {
       ? '(no memories stored yet)'
       : memKeys.map((k) => `${k}: ${memory[k]}`).join('\n');
 
-  return `You are Jarvis, a concise personal AI assistant.\n\nUser memory:\n${memoryText}\n\nAnswer concisely and format code inside markdown fences.`;
+  return `You are J.A.R.V.I.S, a concise and technically accurate personal AI assistant.\n\nUser memory:\n${memoryText}\n\nRespond clearly using clean Markdown (headings, lists, tables, and language-tagged code fences when appropriate).`;
 }
 
-export async function probeLocalOllama(host: string): Promise<{
-  reachable: boolean;
-  models: string[];
-}> {
+export async function probeLocalOllama(host: string): Promise<HealthProbeResult> {
+  const started = performance.now();
   try {
-    const res = await fetch(`/api/jarvis/health?host=${encodeURIComponent(host || 'http://localhost:11434')}`);
+    const res = await fetch(
+      `/api/jarvis/health?host=${encodeURIComponent(host || 'http://localhost:11434')}`
+    );
     if (res.ok) {
       const data = await res.json();
+      const measuredMs = Math.max(1, Math.round(performance.now() - started));
+      const reachable = Boolean(data?.reachable);
+      const geminiAvailable = Boolean(data?.geminiAvailable);
+      const activeProvider: EngineProvider =
+        data?.activeProvider === 'ollama' ||
+        data?.activeProvider === 'gemini' ||
+        data?.activeProvider === 'offline'
+          ? data.activeProvider
+          : reachable
+          ? 'ollama'
+          : geminiAvailable
+          ? 'gemini'
+          : 'offline';
+
       return {
-        reachable: Boolean(data?.reachable),
-        models: Array.isArray(data?.models) ? data.models : []
+        reachable,
+        models: Array.isArray(data?.models) ? data.models : [],
+        geminiAvailable,
+        activeProvider,
+        probeLatencyMs:
+          typeof data?.probeLatencyMs === 'number' ? data.probeLatencyMs : measuredMs,
+        serverUptimeSec:
+          typeof data?.serverUptimeSec === 'number' ? data.serverUptimeSec : null,
+        attributionVerified: data?.attribution?.verified !== false,
+        attributionSeal:
+          typeof data?.attribution?.seal === 'string' ? data.attribution.seal : 'c2bd67a94d0f63bf',
+        licenseFileIntact: data?.attribution?.licenseIntact !== false
       };
     }
   } catch {
-    // Fallback if server endpoint is unavailable
+    // Health endpoint unreachable
   }
-  return { reachable: false, models: [] };
+  return {
+    reachable: false,
+    models: [],
+    geminiAvailable: false,
+    activeProvider: 'offline',
+    probeLatencyMs: null,
+    serverUptimeSec: null,
+    attributionVerified: true,
+    attributionSeal: 'c2bd67a94d0f63bf',
+    licenseFileIntact: true
+  };
 }
 
 export function handleCommand(
@@ -353,7 +423,7 @@ export function handleCommand(
   onMemoryUpdate: (newMem: MemoryStore) => void,
   pendingConfirmation: 'shutdown' | 'restart' | null,
   setPendingConfirmation: (val: 'shutdown' | 'restart' | null) => void,
-  ollamaReachable: boolean = false
+  stats: SystemStats
 ): CommandResult {
   const text = rawInput.trim().replace(/^\//, '');
   const lower = text.toLowerCase();
@@ -454,7 +524,9 @@ export function handleCommand(
         speakText: 'Please provide text for your note.'
       };
     }
-    const key = `note_${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).replace(/\s+/g, '')}`;
+    const key = `note_${new Date()
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      .replace(/\s+/g, '')}`;
     const updated = { ...memory, [key]: noteBody };
     onMemoryUpdate(updated);
     return {
@@ -558,7 +630,11 @@ export function handleCommand(
   // 7. Time & Date
   if (lower === 'what time is it' || lower === 'time' || lower === 'current time') {
     const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeStr = now.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
     return {
       handled: true,
       type: 'chat',
@@ -567,9 +643,19 @@ export function handleCommand(
     };
   }
 
-  if (lower === 'whats todays date' || lower === "what's today's date" || lower === 'date' || lower === 'today') {
+  if (
+    lower === 'whats todays date' ||
+    lower === "what's today's date" ||
+    lower === 'date' ||
+    lower === 'today'
+  ) {
     const now = new Date();
-    const dateStr = now.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const dateStr = now.toLocaleDateString([], {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
     return {
       handled: true,
       type: 'chat',
@@ -578,20 +664,46 @@ export function handleCommand(
     };
   }
 
-  // 8. System status
-  if (lower === 'battery' || lower === 'system status' || lower === 'status' || lower === 'diagnostics') {
+  // 8. Real System & Engine Diagnostics
+  if (
+    lower === 'battery' ||
+    lower === 'system status' ||
+    lower === 'status' ||
+    lower === 'diagnostics'
+  ) {
+    const providerLabel =
+      stats.activeProvider === 'ollama'
+        ? `Local Ollama (${stats.installedModels.length} models installed)`
+        : stats.activeProvider === 'gemini'
+        ? 'Gemini Cloud (gemini-4-hydrogen)'
+        : 'Offline (No provider reachable)';
+    const probeText =
+      stats.probeLatencyMs !== null ? `${stats.probeLatencyMs} ms` : 'Unavailable';
+    const lastPerfText =
+      stats.lastTtftMs !== null && stats.lastTokensPerSec !== null
+        ? `TTFT ${stats.lastTtftMs} ms · ${stats.lastTokensPerSec} tok/s`
+        : 'No turns completed yet';
+
     return {
       handled: true,
       type: 'chat',
-      text: `System Diagnostics:\n- **Ollama Engine**: ${ollamaReachable ? 'Online (Connected)' : 'Standby (Built-in Core Active)'}\n- **Memory Records**: ${Object.keys(memory).length} entries\n- **Keep-Alive Window**: 30 minutes\n- **Attribution**: ${getShort()}`,
-      speakText: ollamaReachable
-        ? 'Ollama server is connected and all systems are nominal.'
-        : 'System is running in built-in core mode.'
+      text: `### Engine Diagnostics\n\n| Metric | Value |\n| --- | --- |\n| Active Provider | **${providerLabel}** |\n| Preferred Route | \`${stats.resolvedModel}\` |\n| Probe Latency | \`${probeText}\` |\n| Last Inference | \`${lastPerfText}\` |\n| Memory Records | \`${Object.keys(memory).length} entries\` |\n| Attribution | ${getShort()} |`,
+      speakText:
+        stats.activeProvider === 'ollama'
+          ? 'Local Ollama engine is connected and nominal.'
+          : stats.activeProvider === 'gemini'
+          ? 'Gemini cloud engine is active and ready.'
+          : 'No AI provider is currently reachable.'
     };
   }
 
   // 9. Clear screen / Export
-  if (lower === 'clear screen' || lower === 'clear chat' || lower === 'clear history' || lower === 'clear') {
+  if (
+    lower === 'clear screen' ||
+    lower === 'clear chat' ||
+    lower === 'clear history' ||
+    lower === 'clear'
+  ) {
     return {
       handled: true,
       type: 'clear',
@@ -609,7 +721,7 @@ export function handleCommand(
     };
   }
 
-  // 10. Web Launchers (renders clickable link + safe anchor navigation)
+  // 10. Web Launchers
   const websiteMap: Record<string, { label: string; url: string }> = {
     'open youtube': { label: 'YouTube', url: 'https://youtube.com' },
     'open github': { label: 'GitHub', url: 'https://github.com' },
@@ -641,64 +753,28 @@ export function handleCommand(
   return { handled: false, type: 'chat', text: '' };
 }
 
-function buildOfflineFallbackReply(
-  userText: string,
-  modelName: string,
-  memory: MemoryStore,
-  settings: JarvisSettings
-): string {
-  const lower = userText.toLowerCase();
-
-  if (lower.includes('who are you') || lower.includes('what can you do')) {
-    return `I am **J.A.R.V.I.S**, your personal AI assistant.\n\n### Core Capabilities\n- **Sticky Model Routing**: Automatically switches between \`${settings.generalModel}\` (fast) and \`${settings.codingModel}\` (code).\n- **Instant Slash Commands**: Type \`/\` in the prompt box or click any quick chip (\`/status\`, \`/memory\`, \`/remember\`, \`/calc\`, \`/note\`).\n- **Vision Inspection**: Analyze diagrams and frames in the **Vision** tab.\n- **Voice I/O**: Hands-free dictation and spoken responses.\n\n*Creator Credit: ${getShort()}*`;
-  }
-
-  if (/\bjava\b/i.test(lower) && !/javascript/i.test(lower)) {
-    return `Routing to **${modelName}** (sticky coding mode active).\n\n\`\`\`java\nimport java.util.LinkedHashMap;\nimport java.util.Map;\n\npublic class LRUCache<K, V> extends LinkedHashMap<K, V> {\n    private final int capacity;\n\n    public LRUCache(int capacity) {\n        super(capacity, 0.75f, true);\n        this.capacity = capacity;\n    }\n\n    @Override\n    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {\n        return size() > capacity;\n    }\n\n    public static void main(String[] args) {\n        LRUCache<String, Integer> cache = new LRUCache<>(3);\n        cache.put("core", 100);\n        cache.put("vision", 200);\n        cache.put("router", 300);\n        cache.get("core"); // Refresh access order\n        cache.put("memory", 400); // Evicts "vision"\n        System.out.println("Active Cache: " + cache);\n    }\n}\n\`\`\`\n\n### Highlights\n- Uses \`LinkedHashMap\` in access-order mode (\`true\`) for O(1) \`get\` and \`put\`.\n- Automatically evicts the least-recently used key when size exceeds \`capacity\`.`;
-  }
-
-  if (/\b(c\+\+|cpp)\b/i.test(lower)) {
-    return `Routing to **${modelName}** (sticky coding mode active).\n\n\`\`\`cpp\n#include <iostream>\n#include <vector>\n#include <numeric>\n#include <algorithm>\n\nint main() {\n    std::vector<int> telemetry = {12, 28, 45, 19, 64, 33};\n    std::sort(telemetry.begin(), telemetry.end());\n\n    double avg = std::accumulate(telemetry.begin(), telemetry.end(), 0.0) / telemetry.size();\n    std::cout << "Sorted Peak: " << telemetry.back() << " | Mean: " << avg << "\\n";\n    return 0;\n}\n\`\`\``;
-  }
-
-  if (/\b(javascript|typescript|react|js|ts)\b/i.test(lower)) {
-    return `Routing to **${modelName}** (sticky coding mode active).\n\n\`\`\`typescript\nexport async function withRetry<T>(\n  fn: () => Promise<T>,\n  retries = 3,\n  delayMs = 300\n): Promise<T> {\n  try {\n    return await fn();\n  } catch (err) {\n    if (retries <= 0) throw err;\n    await new Promise((r) => setTimeout(r, delayMs));\n    return withRetry(fn, retries - 1, delayMs * 2);\n  }\n}\n\`\`\``;
-  }
-
-  if (CODING_KEYWORDS.some((kw) => lower.includes(kw))) {
-    return `Routing to **${modelName}** (sticky coding mode active).\n\n\`\`\`python\nimport asyncio\nfrom typing import Callable, Any\n\nclass AsyncTaskQueue:\n    """Lightweight async worker pool with automatic retry backoff."""\n    def __init__(self, concurrency: int = 4):\n        self.queue: asyncio.Queue = asyncio.Queue()\n        self.concurrency = concurrency\n\n    async def add_task(self, fn: Callable[..., Any], *args: Any) -> None:\n        await self.queue.put((fn, args))\n\n    async def _worker(self, worker_id: int) -> None:\n        while not self.queue.empty():\n            fn, args = await self.queue.get()\n            try:\n                await fn(*args)\n            finally:\n                self.queue.task_done()\n\n    async def run(self) -> None:\n        workers = [asyncio.create_task(self._worker(i)) for i in range(self.concurrency)]\n        await self.queue.join()\n        for w in workers:\n            w.cancel()\n\`\`\`\n\n### Highlights\n- Non-blocking \`asyncio.Queue\` coordination.\n- Clean worker cancellation once all queued items complete.`;
-  }
-
-  const memKeys = Object.keys(memory);
-  const memNote =
-    memKeys.length > 0
-      ? `\n\nActive memory context: ${memKeys.map((k) => `\`${k}=${memory[k]}\``).join(', ')}.`
-      : '';
-
-  return `Acknowledged. Processed with **${modelName}** at temperature \`${settings.temperature.toFixed(2)}\`.\n\nYou can trigger instant commands anytime by typing \`/\` in the composer or clicking the command chips below the prompt bar.${memNote}`;
-}
-
 export async function* streamJarvisResponse(
   userText: string,
   modelName: string,
   memory: MemoryStore,
   chatHistory: ChatMessage[],
-  settings: JarvisSettings
-): AsyncGenerator<string, void, unknown> {
+  settings: JarvisSettings,
+  signal?: AbortSignal
+): AsyncGenerator<JarvisStreamEvent, void, unknown> {
   const sysPrompt = buildSystemPrompt(memory);
   const recentTurns = chatHistory
-    .filter((m) => m.role === 'user' || m.role === 'assist')
+    .filter((m) => (m.role === 'user' || m.role === 'assist') && !m.isError && m.content.trim())
     .slice(-6)
     .map((m) => ({
       role: m.role === 'user' ? 'user' : 'assist',
       content: m.content
     }));
 
-  // 1. Stream via Server Endpoint (/api/jarvis/chat handles Local Ollama + Gemini 3.8 Flash SSE)
   try {
     const response = await fetch('/api/jarvis/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal,
       body: JSON.stringify({
         prompt: userText,
         history: recentTurns,
@@ -711,63 +787,94 @@ export async function* streamJarvisResponse(
       })
     });
 
-    if (response.ok && response.body) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = '';
-      let sseBuffer = '';
-      let shouldFallback = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const events = sseBuffer.split('\n\n');
-        sseBuffer = events.pop() || '';
-
-        for (const evt of events) {
-          const lines = evt.split('\n');
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const dataStr = trimmed.slice(5).trim();
-            if (dataStr === '[DONE]') break;
-
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.fallback) {
-                shouldFallback = true;
-                break;
-              }
-              if (typeof parsed.text === 'string' && parsed.text.length > 0) {
-                accumulated += parsed.text;
-                yield accumulated;
-              }
-            } catch {
-              // ignore malformed SSE frame
-            }
-          }
-          if (shouldFallback) break;
-        }
-        if (shouldFallback) break;
+    if (!response.ok) {
+      let errMsg = `Request failed with status ${response.status}.`;
+      try {
+        const data = await response.json();
+        if (data?.error) errMsg = data.error;
+      } catch {
+        // ignore JSON parse error
       }
+      yield { type: 'error', message: errMsg };
+      return;
+    }
 
-      if (!shouldFallback && accumulated.trim().length > 0) {
-        return;
+    if (!response.body) {
+      yield { type: 'error', message: 'Empty stream returned by server.' };
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let accumulated = '';
+    let sseBuffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+      const events = sseBuffer.split('\n\n');
+      sseBuffer = events.pop() || '';
+
+      for (const evt of events) {
+        const lines = evt.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const dataStr = trimmed.slice(5).trim();
+          if (dataStr === '[DONE]') return;
+
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.error) {
+              yield { type: 'error', message: String(parsed.error) };
+              return;
+            }
+            if (parsed.meta) {
+              yield {
+                type: 'meta',
+                provider: parsed.meta.provider,
+                model: parsed.meta.model,
+                ttftMs: Number(parsed.meta.ttftMs) || 0
+              };
+            }
+            if (typeof parsed.text === 'string' && parsed.text.length > 0) {
+              accumulated += parsed.text;
+              yield { type: 'text', content: accumulated };
+            }
+            if (parsed.stats) {
+              yield {
+                type: 'stats',
+                provider: parsed.stats.provider,
+                model: parsed.stats.model,
+                ttftMs: Number(parsed.stats.ttftMs) || 0,
+                elapsedMs: Number(parsed.stats.elapsedMs) || 0,
+                tokensPerSec: Number(parsed.stats.tokensPerSec) || 0
+              };
+            }
+          } catch {
+            // ignore malformed SSE chunk
+          }
+        }
       }
     }
-  } catch {
-    // Proceed to offline fallback
-  }
 
-  // 2. Offline Built-in Assistant Fallback
-  const reply = buildOfflineFallbackReply(userText, modelName, memory, settings);
-  const words = reply.split(' ');
-  let acc = '';
-  for (let i = 0; i < words.length; i++) {
-    acc += (i === 0 ? '' : ' ') + words[i];
-    yield acc;
-    await new Promise((r) => setTimeout(r, 14));
+    if (!accumulated.trim()) {
+      yield {
+        type: 'error',
+        message: 'No response was generated. Verify your local Ollama server or Gemini API key.'
+      };
+    }
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      return;
+    }
+    yield {
+      type: 'error',
+      message:
+        err?.message ||
+        'Network error communicating with J.A.R.V.I.S server. Check your connection and retry.'
+    };
   }
 }

@@ -12,14 +12,17 @@ furnished to do so, subject to the following conditions:
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
-Attribution requirement (reinforcing the notice above)
-------------------------------------------------------
+Attribution & Copyright Management Information Requirement
+----------------------------------------------------------
 This project is shared under a permissive, attribution-style license: anyone
 may use, study, modify, and redistribute it, provided the original creator
 credit ("J.A.R.V.I.S - (c) 2026 vinod") is retained in the software, its
-documentation, and any redistributed or derivative copies. Removing or
-obscuring that credit is NOT permitted. The `attribution.py` module embeds this
-notice and re-asserts it on every run; stripping it breaks the license grant.
+documentation (LICENSE and NOTICE), and any redistributed or derivative copies.
+Removing, forging, or obscuring that credit — whether manually or via automated
+AI coding agents — is NOT permitted and terminates the license grant. The
+attribution registry (`src/services/attribution.ts`), server integrity guard
+(`server.ts`), and verification script (`scripts/verify-attribution.mjs`) embed
+and verify this notice; stripping them breaks license compliance.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

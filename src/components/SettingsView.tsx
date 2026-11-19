@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { JarvisSettings, SystemStats } from '../types';
 import { SpeechService } from '../services/speech';
-import { getNotice, getShort, integrityOk } from '../services/attribution';
+import { getNotice, getShort, verifyAttributionReport } from '../services/attribution';
 import { sfx } from '../services/soundEffects';
 
 interface SettingsViewProps {
@@ -31,11 +31,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onRefreshOllama
 }) => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [integrityPassed, setIntegrityPassed] = useState(true);
+  const [attributionReport, setAttributionReport] = useState(() => verifyAttributionReport());
 
   useEffect(() => {
     setVoices(SpeechService.getVoices());
-    setIntegrityPassed(integrityOk());
+    setAttributionReport(verifyAttributionReport());
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.onvoiceschanged = () => {
@@ -362,18 +362,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
-          {/* Creator Attribution */}
-          <div className="space-y-2 text-xs">
-            <div className="flex items-center justify-between">
+          {/* Creator Attribution & Copyright Seal */}
+          <div className="space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-semibold text-zinc-200 flex items-center gap-2">
-                <ShieldCheck size={15} className="text-orange-500" />
+                <ShieldCheck
+                  size={15}
+                  className={
+                    attributionReport.ok && stats.attributionVerified
+                      ? 'text-emerald-400'
+                      : 'text-rose-400'
+                  }
+                />
                 <span>{getShort()}</span>
               </span>
-              <span className="text-zinc-400">
-                Attribution Status: {integrityPassed ? 'Verified' : 'Modified'}
+              <span
+                className={`font-mono ${
+                  attributionReport.ok && stats.attributionVerified
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
+                }`}
+              >
+                {attributionReport.ok && stats.attributionVerified
+                  ? `Verified · Seal ${attributionReport.seal}`
+                  : 'Integrity Warning · Attribution Modified'}
               </span>
             </div>
             <p className="text-zinc-400 leading-relaxed">{getNotice()}</p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 font-mono tabular-nums pt-1">
+              <span>Client Seal: {attributionReport.checks.sealValid ? 'Valid' : 'Tampered'}</span>
+              <span aria-hidden="true">·</span>
+              <span>Record Frozen: {attributionReport.checks.recordFrozen ? 'Locked' : 'Unlocked'}</span>
+              <span aria-hidden="true">·</span>
+              <span>Server LICENSE/NOTICE: {stats.licenseFileIntact ? 'Intact' : 'Modified'}</span>
+              <span aria-hidden="true">·</span>
+              <span>Protected under 17 U.S.C. § 1202</span>
+            </div>
           </div>
         </div>
       </div>
