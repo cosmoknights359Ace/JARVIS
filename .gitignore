@@ -30,6 +30,11 @@ __pycache__/
 .aider.tags.cache.v4/
 jarvis-backup-prerewrite.bundle
 
+# Local model weights (keep out of GitHub — use models/Modelfile.vai-doc)
+*.gguf
+*.bin
+*.safetensors
+
 # IDE
 .vscode/
 .aider*

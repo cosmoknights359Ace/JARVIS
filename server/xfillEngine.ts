@@ -11,6 +11,13 @@ import crypto from 'crypto';
 import JSZip from 'jszip';
 import ExcelJS from 'exceljs';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  DEFAULT_STUDIO_MODEL,
+  DEFAULT_STUDIO_NUM_CTX,
+  extractJsonPayload,
+  isMissingFieldAnswer,
+  resolveAvailableOllamaModel
+} from './localJsonUtils.ts';
 
 export type XfillFileType = 'docx' | 'xlsx' | 'pptx';
 export type XfillSlotKind = 'placeholder' | 'question' | 'blank_field' | 'table_cell';
@@ -1204,7 +1211,7 @@ function normalizeSolvedItems(
           ? item.confidence
           : 'medium';
 
-      if (!answer || /\[needs input\]/i.test(answer)) {
+      if (isMissingFieldAnswer(answer)) {
         answer = '[NEEDS INPUT]';
         source = 'missing';
         confidence = 'needs_input';
@@ -1237,12 +1244,13 @@ function normalizeSolvedItems(
 async function solveBatchWithOllama(
   batchSlots: InternalSlot[],
   opts: SolveRequestOptions
-): Promise<SolvedSlotResult[] | null> {
+): Promise<{ results: SolvedSlotResult[]; modelUsed: string } | null> {
   const cleanHost = (opts.ollamaHost || 'http://127.0.0.1:11434')
     .replace(/\/+$/, '')
     .replace('localhost', '127.0.0.1');
 
-  // 1. Fast reachability check (1.2s) so offline servers fall back to Gemini immediately
+  // 1. Fast reachability check (1.2s) + installed model discovery so offline servers fall back immediately
+  let installedModels: string[] = [];
   const probeCtrl = new AbortController();
   const probeTimer = setTimeout(() => probeCtrl.abort(), 1200);
   try {
@@ -1252,10 +1260,20 @@ async function solveBatchWithOllama(
     });
     clearTimeout(probeTimer);
     if (!probeRes.ok) return null;
+    const tagData: any = await probeRes.json().catch(() => null);
+    if (Array.isArray(tagData?.models)) {
+      installedModels = tagData.models.map((m: any) => m?.name).filter(Boolean);
+    }
   } catch {
     clearTimeout(probeTimer);
     return null;
   }
+
+  const effectiveModel = resolveAvailableOllamaModel(
+    opts.modelName || DEFAULT_STUDIO_MODEL,
+    installedModels,
+    'qwen2.5:3b'
+  );
 
   // 2. Local Ollama is live — allow generous 120s timeout for thorough local inference
   const { system, user } = buildGroundedPrompt(batchSlots, opts);
@@ -1268,12 +1286,13 @@ async function solveBatchWithOllama(
       headers: { 'Content-Type': 'application/json' },
       signal: chatCtrl.signal,
       body: JSON.stringify({
-        model: opts.modelName || 'qwen2.5:3b',
+        model: effectiveModel,
         stream: false,
         format: 'json',
         keep_alive: `${opts.keepAliveMinutes || 30}m`,
         options: {
           temperature: 0.1,
+          num_ctx: DEFAULT_STUDIO_NUM_CTX,
           num_predict: 2048
         },
         messages: [
@@ -1289,13 +1308,18 @@ async function solveBatchWithOllama(
     const rawContent = data?.message?.content;
     if (typeof rawContent !== 'string' || !rawContent.trim()) return null;
 
-    const parsed = JSON.parse(rawContent);
+    const parsed = extractJsonPayload(rawContent);
+    if (!parsed) return null;
+
     const items = Array.isArray(parsed?.answers)
       ? parsed.answers
       : Array.isArray(parsed)
       ? parsed
       : [];
-    return normalizeSolvedItems(items, batchSlots);
+    return {
+      results: normalizeSolvedItems(items, batchSlots),
+      modelUsed: effectiveModel
+    };
   } catch {
     clearTimeout(chatTimer);
     return null;
@@ -1371,15 +1395,16 @@ export async function solveDocumentSlots(
   const BATCH_SIZE = 10;
   const allResults: SolvedSlotResult[] = [];
   let usedProvider: 'ollama' | 'gemini' = 'ollama';
-  let usedModel = opts.modelName || 'qwen2.5:3b';
+  let usedModel = opts.modelName || DEFAULT_STUDIO_MODEL;
 
   for (let i = 0; i < targetSlots.length; i += BATCH_SIZE) {
     const batch = targetSlots.slice(i, i + BATCH_SIZE);
 
-    // 1. Local Ollama first (fast, low-temp T=0.1, JSON formatted)
+    // 1. Local Ollama first (fast, low-temp T=0.1, JSON formatted, vai-doc:latest default)
     const ollamaBatch = await solveBatchWithOllama(batch, opts);
     if (ollamaBatch) {
-      allResults.push(...ollamaBatch);
+      usedModel = ollamaBatch.modelUsed;
+      allResults.push(...ollamaBatch.results);
       continue;
     }
 

@@ -1,0 +1,33 @@
+# Ollama Modelfile for vAI-Doc (fine-tuned GGUF for J.A.R.V.I.S Xfill & Xslide)
+# Place your quantized vai-doc.gguf in the same directory (kept out of git via .gitignore)
+# and build locally with:
+#   ollama create vai-doc:latest -f models/Modelfile.vai-doc
+
+FROM ./vai-doc.gguf
+
+TEMPLATE """{{- if .Messages }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{- range .Messages }}{{- if eq .Role "system" }}<|im_start|>system
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}<|im_end|>
+{{ end }}{{- end }}<|im_start|>assistant
+{{ else }}{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}"""
+
+SYSTEM """You are vAI-Doc, a specialized assistant for strict document Q&A, summarization, and structured PowerPoint JSON generation. For document Q&A, answer ONLY using the provided context without mixing sections, and say 'I don't know.' if the answer is missing. For PowerPoint requests, output ONLY valid JSON matching the requested schema."""
+
+PARAMETER temperature 0.2
+PARAMETER top_p 0.8
+PARAMETER repeat_penalty 1.05
+PARAMETER num_ctx 8192
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"

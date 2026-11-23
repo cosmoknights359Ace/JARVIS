@@ -24,9 +24,11 @@ import {
   XfillSlot
 } from '../types';
 import { sfx } from '../services/soundEffects';
+import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
 
 interface XfillViewProps {
   settings: JarvisSettings;
+  onUpdateSettings: (newSettings: JarvisSettings) => void;
   memory: MemoryStore;
   onUpdateMemory: (newMem: MemoryStore) => void;
   stats: SystemStats;
@@ -48,6 +50,7 @@ function getFileIcon(type: XfillFileType) {
 
 export const XfillView: React.FC<XfillViewProps> = ({
   settings,
+  onUpdateSettings,
   memory,
   onUpdateMemory,
   stats
@@ -79,8 +82,13 @@ export const XfillView: React.FC<XfillViewProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const preferredModel =
-    settings.model === 'auto' ? settings.generalModel : settings.model;
+  const preferredModel = (settings.xfillModel || DEFAULT_STUDIO_MODEL).trim();
+  const modelOptions = buildStudioModelOptions({
+    activeModel: preferredModel,
+    installedModels: stats.installedModels,
+    generalModel: settings.generalModel,
+    codingModel: settings.codingModel
+  });
 
   const inspectFile = async (file: File) => {
     setErrorMsg(null);
@@ -427,6 +435,25 @@ export const XfillView: React.FC<XfillViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <label className="flex items-center gap-1.5 bg-[#070709] border border-zinc-800 rounded-xl px-2.5 py-2 text-xs text-zinc-400">
+              <span className="text-[11px] font-medium text-zinc-500">Model</span>
+              <select
+                aria-label="Xfill model"
+                value={preferredModel}
+                onChange={(e) => {
+                  sfx.playClick();
+                  onUpdateSettings({ ...settings, xfillModel: e.target.value });
+                }}
+                className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none cursor-pointer"
+              >
+                {modelOptions.map((m) => (
+                  <option key={m} value={m} className="bg-[#111115] text-zinc-100">
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <button
               type="button"
               onClick={() => handleSolve()}

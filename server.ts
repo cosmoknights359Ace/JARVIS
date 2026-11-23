@@ -521,7 +521,7 @@ async function startServer() {
         strictGrounding = false,
         answerStyle = 'concise',
         customInstructions = '',
-        modelName = 'qwen2.5:3b',
+        modelName = 'vai-doc:latest',
         ollamaHost = 'http://127.0.0.1:11434',
         keepAliveMinutes = 30
       } = req.body || {};
@@ -590,7 +590,7 @@ async function startServer() {
         contextNotes = '',
         includeMemory = true,
         memory = {},
-        modelName = 'qwen2.5:3b',
+        modelName = 'vai-doc:latest',
         ollamaHost = 'http://127.0.0.1:11434',
         keepAliveMinutes = 30
       } = req.body || {};
@@ -637,7 +637,7 @@ async function startServer() {
         totalSlides = 1,
         instruction = '',
         contextNotes = '',
-        modelName = 'qwen2.5:3b',
+        modelName = 'vai-doc:latest',
         ollamaHost = 'http://127.0.0.1:11434',
         keepAliveMinutes = 30
       } = req.body || {};

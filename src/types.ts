@@ -50,6 +50,8 @@ export interface JarvisSettings {
   generalModel: string;
   codingModel: string;
   visionModel: string;
+  xfillModel: string;
+  slidesModel: string;
   ollamaHost: string;
   temperature: number;
   maxTokens: number;

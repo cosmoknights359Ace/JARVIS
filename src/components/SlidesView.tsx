@@ -34,9 +34,11 @@ import {
   SystemStats
 } from '../types';
 import { sfx } from '../services/soundEffects';
+import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
 
 interface SlidesViewProps {
   settings: JarvisSettings;
+  onUpdateSettings: (newSettings: JarvisSettings) => void;
   memory: MemoryStore;
   stats: SystemStats;
 }
@@ -133,7 +135,12 @@ const STARTER_TOPICS = [
 
 const DECK_STORAGE_KEY = 'jarvis_slides_draft_v1';
 
-export const SlidesView: React.FC<SlidesViewProps> = ({ settings, memory, stats }) => {
+export const SlidesView: React.FC<SlidesViewProps> = ({
+  settings,
+  onUpdateSettings,
+  memory,
+  stats
+}) => {
   // Creation Brief State
   const [topic, setTopic] = useState('');
   const [slideCount, setSlideCount] = useState<number>(8);
@@ -219,8 +226,13 @@ export const SlidesView: React.FC<SlidesViewProps> = ({ settings, memory, stats 
     return () => window.removeEventListener('keydown', onKey);
   }, [showConsentModal]);
 
-  const resolvedModelName =
-    settings.model === 'auto' ? settings.generalModel : settings.model;
+  const resolvedModelName = (settings.slidesModel || DEFAULT_STUDIO_MODEL).trim();
+  const modelOptions = buildStudioModelOptions({
+    activeModel: resolvedModelName,
+    installedModels: stats.installedModels,
+    generalModel: settings.generalModel,
+    codingModel: settings.codingModel
+  });
 
   const updateActiveSlide = (patch: Partial<SlideItem>) => {
     if (!deck || !activeSlide) return;
@@ -860,6 +872,25 @@ export const SlidesView: React.FC<SlidesViewProps> = ({ settings, memory, stats 
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 bg-[#070709] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-400">
+            <span className="text-[11px] font-medium text-zinc-500">Model</span>
+            <select
+              aria-label="Xslide model"
+              value={resolvedModelName}
+              onChange={(e) => {
+                sfx.playClick();
+                onUpdateSettings({ ...settings, slidesModel: e.target.value });
+              }}
+              className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none cursor-pointer"
+            >
+              {modelOptions.map((m) => (
+                <option key={m} value={m} className="bg-[#111115] text-zinc-100">
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+
           {/* Consent Controls */}
           {!webImageConsent ? (
             <button

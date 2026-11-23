@@ -99,6 +99,19 @@ ollama pull qwen2.5:3b
 ollama pull qwen2.5-coder:7b
 ```
 
+#### Optional: Custom Fine-Tuned `vai-doc:latest` Model (Recommended for Xfill & Xslide)
+
+J.A.R.V.I.S routes **Xfill** and **Xslide** to `vai-doc:latest` by default (with automatic local fallback to `qwen2.5:3b` if `vai-doc:latest` is not installed yet). To register your quantized `vai-doc.gguf` file with Ollama:
+
+1. Place `vai-doc.gguf` inside the `models/` folder (all `*.gguf` files are gitignored so model weights are never committed to GitHub).
+2. Build the Ollama model from the included Modelfile (`num_ctx 8192` + ChatML stop tokens):
+
+```bash
+ollama create vai-doc:latest -f models/Modelfile.vai-doc
+```
+
+3. You can switch the active Xfill or Xslide model anytime from **Settings** or directly inside the **Xfill** / **Xslide** headers.
+
 *(Optional — only needed if you want local image/vision analysis)*:
 
 ```bash

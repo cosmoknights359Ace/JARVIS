@@ -20,6 +20,12 @@ import type {
   SlideLayoutType,
   SlideThemeId
 } from '../src/types.ts';
+import {
+  DEFAULT_STUDIO_MODEL,
+  DEFAULT_STUDIO_NUM_CTX,
+  extractJsonPayload,
+  resolveAvailableOllamaModel
+} from './localJsonUtils.ts';
 
 const PptxGenJS: any = (PptxGenJSModule as any).default || PptxGenJSModule;
 
@@ -272,12 +278,13 @@ async function callOllamaJson(
   ollamaHost: string,
   modelName: string,
   keepAliveMinutes: number
-): Promise<any | null> {
+): Promise<{ data: any; modelUsed: string } | null> {
   const cleanHost = (ollamaHost || 'http://127.0.0.1:11434')
     .replace(/\/+$/, '')
     .replace('localhost', '127.0.0.1');
 
-  // 1. Fast reachability probe (1.2s)
+  // 1. Fast reachability probe (1.2s) + installed model discovery
+  let installedModels: string[] = [];
   const probeCtrl = new AbortController();
   const probeTimer = setTimeout(() => probeCtrl.abort(), 1200);
   try {
@@ -287,10 +294,20 @@ async function callOllamaJson(
     });
     clearTimeout(probeTimer);
     if (!probeRes.ok) return null;
+    const tagData: any = await probeRes.json().catch(() => null);
+    if (Array.isArray(tagData?.models)) {
+      installedModels = tagData.models.map((m: any) => m?.name).filter(Boolean);
+    }
   } catch {
     clearTimeout(probeTimer);
     return null;
   }
+
+  const effectiveModel = resolveAvailableOllamaModel(
+    modelName || DEFAULT_STUDIO_MODEL,
+    installedModels,
+    'qwen2.5:3b'
+  );
 
   // 2. Full local generation (120s timeout)
   const chatCtrl = new AbortController();
@@ -301,12 +318,13 @@ async function callOllamaJson(
       headers: { 'Content-Type': 'application/json' },
       signal: chatCtrl.signal,
       body: JSON.stringify({
-        model: modelName || 'qwen2.5:3b',
+        model: effectiveModel,
         stream: false,
         format: 'json',
         keep_alive: `${keepAliveMinutes || 30}m`,
         options: {
           temperature: 0.2,
+          num_ctx: DEFAULT_STUDIO_NUM_CTX,
           num_predict: 3500
         },
         messages: [
@@ -321,7 +339,10 @@ async function callOllamaJson(
     const data: any = await res.json();
     const rawContent = data?.message?.content;
     if (typeof rawContent !== 'string' || !rawContent.trim()) return null;
-    return JSON.parse(rawContent);
+
+    const parsed = extractJsonPayload(rawContent);
+    if (!parsed) return null;
+    return { data: parsed, modelUsed: effectiveModel };
   } catch {
     clearTimeout(chatTimer);
     return null;
@@ -382,7 +403,7 @@ export async function generateSlideDeck(
   const count = clampSlideCount(req.slideCount);
   const { system, user } = buildDeckPrompt(req);
 
-  let parsed: any = await callOllamaJson(
+  const ollamaOut = await callOllamaJson(
     system,
     user,
     req.ollamaHost,
@@ -390,8 +411,9 @@ export async function generateSlideDeck(
     req.keepAliveMinutes
   );
 
+  let parsed: any = ollamaOut?.data ?? null;
   let provider: 'ollama' | 'gemini' = 'ollama';
-  let model = req.modelName || 'qwen2.5:3b';
+  let model = ollamaOut?.modelUsed || req.modelName || DEFAULT_STUDIO_MODEL;
 
   if (!parsed || !Array.isArray(parsed.slides) || parsed.slides.length === 0) {
     if (!aiClient) {
@@ -536,7 +558,7 @@ Return ONLY valid JSON:
     2
   );
 
-  let parsed = await callOllamaJson(
+  const ollamaOut = await callOllamaJson(
     system,
     user,
     params.ollamaHost,
@@ -544,8 +566,9 @@ Return ONLY valid JSON:
     params.keepAliveMinutes
   );
 
+  let parsed: any = ollamaOut?.data ?? null;
   let provider: 'ollama' | 'gemini' = 'ollama';
-  let model = params.modelName || 'qwen2.5:3b';
+  let model = ollamaOut?.modelUsed || params.modelName || DEFAULT_STUDIO_MODEL;
 
   if (!parsed || typeof parsed.title !== 'string') {
     if (!aiClient) {

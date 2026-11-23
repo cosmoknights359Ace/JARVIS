@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS: JarvisSettings = {
   generalModel: 'qwen2.5:3b',
   codingModel: 'qwen2.5-coder:7b',
   visionModel: 'llama3.2-vision:latest',
+  xfillModel: 'vai-doc:latest',
+  slidesModel: 'vai-doc:latest',
   ollamaHost: 'http://localhost:11434',
   temperature: 0.7,
   maxTokens: 1024,
@@ -710,6 +712,7 @@ export const App: React.FC = () => {
           {currentView === 'XFILL' && (
             <XfillView
               settings={settings}
+              onUpdateSettings={setSettings}
               memory={memory}
               onUpdateMemory={setMemory}
               stats={stats}
@@ -719,6 +722,7 @@ export const App: React.FC = () => {
           {currentView === 'SLIDES' && (
             <SlidesView
               settings={settings}
+              onUpdateSettings={setSettings}
               memory={memory}
               stats={stats}
             />

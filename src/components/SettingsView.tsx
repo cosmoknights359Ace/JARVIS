@@ -12,6 +12,7 @@ import { JarvisSettings, SystemStats } from '../types';
 import { SpeechService } from '../services/speech';
 import { getNotice, getShort, verifyAttributionReport } from '../services/attribution';
 import { sfx } from '../services/soundEffects';
+import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
 
 interface SettingsViewProps {
   settings: JarvisSettings;
@@ -50,6 +51,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     onUpdateSettings({ ...settings, [key]: value });
   };
+
+  const studioModelSuggestions = buildStudioModelOptions({
+    activeModel: settings.xfillModel || DEFAULT_STUDIO_MODEL,
+    installedModels: stats.installedModels,
+    generalModel: settings.generalModel,
+    codingModel: settings.codingModel
+  });
 
   const testVoice = () => {
     SpeechService.speak(
@@ -145,6 +153,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 Auto-selected on coding keywords (default: qwen2.5-coder:7b)
               </span>
             </div>
+
+            <div>
+              <label htmlFor="settings-xfill-model" className="block text-zinc-300 font-medium mb-1">
+                Xfill Model (Document Q&amp;A)
+              </label>
+              <input
+                id="settings-xfill-model"
+                type="text"
+                list="ollama-studio-models"
+                value={settings.xfillModel || DEFAULT_STUDIO_MODEL}
+                onChange={(e) => handleChange('xfillModel', e.target.value)}
+                placeholder="vai-doc:latest"
+                className="w-full bg-[#070709] border border-zinc-800 rounded-xl px-3.5 py-2 font-mono text-zinc-100 focus:outline-none focus:border-orange-500"
+              />
+              <span className="text-[11px] text-zinc-500 mt-1 block">
+                Fine-tuned GGUF / Ollama model for Xfill (default: vai-doc:latest)
+              </span>
+            </div>
+
+            <div>
+              <label htmlFor="settings-slides-model" className="block text-zinc-300 font-medium mb-1">
+                Xslide Model (PowerPoint JSON)
+              </label>
+              <input
+                id="settings-slides-model"
+                type="text"
+                list="ollama-studio-models"
+                value={settings.slidesModel || DEFAULT_STUDIO_MODEL}
+                onChange={(e) => handleChange('slidesModel', e.target.value)}
+                placeholder="vai-doc:latest"
+                className="w-full bg-[#070709] border border-zinc-800 rounded-xl px-3.5 py-2 font-mono text-zinc-100 focus:outline-none focus:border-orange-500"
+              />
+              <span className="text-[11px] text-zinc-500 mt-1 block">
+                Fine-tuned GGUF / Ollama model for Xslide (default: vai-doc:latest)
+              </span>
+            </div>
+
+            <datalist id="ollama-studio-models">
+              {studioModelSuggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
 
             <div>
               <label className="block text-zinc-300 font-medium mb-1">
