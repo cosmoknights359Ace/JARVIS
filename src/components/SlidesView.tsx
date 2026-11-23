@@ -112,8 +112,31 @@ const LAYOUT_LABELS: Record<SlideLayoutType, string> = {
   split_image: 'Split + Image',
   bullets: 'Bullets',
   two_column: 'Two Column',
-  stat_highlight: 'Key Metric'
+  stat_highlight: 'Key Metric',
+  table: 'Comparison Table'
 };
+
+function detectPromptSlideCount(
+  prompt: string,
+  preset: number
+): { count: number; overridden: boolean } {
+  if (!prompt.trim()) return { count: preset, overridden: false };
+  const patterns = [
+    /\b(\d{1,2})\s*[- ]?\s*slides?\b/i,
+    /\bslides?\s*(?:count|total)?\s*[:=]\s*(\d{1,2})\b/i,
+    /\b(?:deck|presentation|ppt|pptx)\s+(?:of|with)\s+(\d{1,2})\s+slides?\b/i
+  ];
+  for (const re of patterns) {
+    const match = prompt.match(re);
+    if (match && match[1]) {
+      const parsed = parseInt(match[1], 10);
+      if (Number.isFinite(parsed) && parsed >= 2 && parsed <= 20) {
+        return { count: parsed, overridden: parsed !== preset };
+      }
+    }
+  }
+  return { count: preset, overridden: false };
+}
 
 const STARTER_TOPICS = [
   {
@@ -234,13 +257,29 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
     codingModel: settings.codingModel
   });
 
+  const { count: effectiveSlideCount, overridden: slideCountOverridden } = detectPromptSlideCount(
+    topic,
+    slideCount
+  );
+
   const updateActiveSlide = (patch: Partial<SlideItem>) => {
     if (!deck || !activeSlide) return;
     setDeck((prev) => {
       if (!prev) return prev;
-      const slides = prev.slides.map((s, idx) =>
-        idx === activeSlideIdx ? { ...s, ...patch } : s
-      );
+      const slides = prev.slides.map((s, idx) => {
+        if (idx !== activeSlideIdx) return s;
+        const next: SlideItem = { ...s, ...patch };
+        if (next.layout === 'table' && !next.table) {
+          next.table = {
+            headers: ['Criterion', 'Option A', 'Option B'],
+            rows: [
+              ['Complexity', 'O(log N)', 'O(1) amortized'],
+              ['Trade-off', 'Predictable reads', 'High write throughput']
+            ]
+          };
+        }
+        return next;
+      });
       return { ...prev, updatedAt: new Date().toISOString(), slides };
     });
   };
@@ -362,7 +401,7 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
         for (let i = 0; i < updatedSlides.length; i++) {
           const s = updatedSlides[i];
           if (s.image) continue;
-          if (s.layout === 'two_column' || s.layout === 'stat_highlight') continue;
+          if (s.layout === 'two_column' || s.layout === 'stat_highlight' || s.layout === 'table') continue;
 
           const q = (s.imageQuery || s.title).trim();
           if (!q) continue;
@@ -501,6 +540,12 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
       title: `${orig.title} (Copy)`,
       bullets: [...orig.bullets],
       secondaryBullets: orig.secondaryBullets ? [...orig.secondaryBullets] : undefined,
+      table: orig.table
+        ? {
+            headers: [...orig.table.headers],
+            rows: orig.table.rows.map((r) => [...r])
+          }
+        : undefined,
       highlightStat: orig.highlightStat ? { ...orig.highlightStat } : undefined
     };
     const nextSlides = [...deck.slides];
@@ -793,6 +838,59 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                     ))}
                   </ul>
                 </div>
+              ) : slide.layout === 'table' && slide.table && slide.table.headers.length > 0 ? (
+                <div className="flex-1 min-h-0 overflow-auto">
+                  <table
+                    className={`w-full border-collapse text-left rounded-lg overflow-hidden ${
+                      slide.table.rows.length >= 4 ? 'text-[10px] sm:text-[11px]' : 'text-[11px] sm:text-xs'
+                    }`}
+                    style={{ borderColor: t.border }}
+                  >
+                    <thead>
+                      <tr style={{ backgroundColor: t.accent }}>
+                        {slide.table.headers.map((header, hi) => (
+                          <th
+                            key={hi}
+                            className={`${
+                              slide.table!.rows.length >= 4 ? 'px-2.5 py-1.5' : 'px-3 py-2'
+                            } font-semibold border leading-tight`}
+                            style={{
+                              borderColor: t.border,
+                              color: t.isDark ? '#09090D' : '#FFFFFF'
+                            }}
+                          >
+                            {header}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {slide.table.rows.map((row, ri) => (
+                        <tr
+                          key={ri}
+                          style={{
+                            backgroundColor: ri % 2 === 0 ? t.surface : t.bg
+                          }}
+                        >
+                          {slide.table!.headers.map((_, ci) => (
+                            <td
+                              key={ci}
+                              className={`${
+                                slide.table!.rows.length >= 4 ? 'px-2.5 py-1.5 leading-tight' : 'px-3 py-2 leading-snug'
+                              } border align-top ${ci === 0 ? 'font-semibold' : ''}`}
+                              style={{
+                                borderColor: t.border,
+                                color: t.text
+                              }}
+                            >
+                              {row[ci] ?? ''}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="flex-1 flex gap-5 min-h-0 items-start">
                   <ul className="flex-1 space-y-2.5 overflow-y-auto max-h-full">
@@ -1003,7 +1101,7 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                   <RefreshCw size={18} className="text-orange-500 animate-spin" />
                   <div>
                     <h2 className="text-base font-display font-semibold text-zinc-100">
-                      Drafting {slideCount}-Slide Blueprint...
+                      Drafting {effectiveSlideCount}-Slide Blueprint...
                     </h2>
                     <p className="text-xs text-zinc-400 mt-0.5">
                       Generating structured slide layouts, concise points, speaker notes, and image queries via{' '}
@@ -1071,7 +1169,14 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                   {/* Slide Count & Audience */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <span className="block text-xs font-medium text-zinc-300">Slide Count</span>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="block text-xs font-medium text-zinc-300">Slide Count</span>
+                        {slideCountOverridden && (
+                          <span className="text-[11px] font-mono text-orange-400">
+                            Prompt override: {effectiveSlideCount}
+                          </span>
+                        )}
+                      </div>
                       <div className="grid grid-cols-4 gap-1.5 p-1 rounded-lg bg-[#070709] border border-zinc-800/90">
                         {[5, 8, 10, 12].map((n) => (
                           <button
@@ -1082,8 +1187,10 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                               setSlideCount(n);
                             }}
                             className={`py-1.5 text-xs font-mono font-medium rounded-md transition-colors tabular-nums ${
-                              slideCount === n
+                              !slideCountOverridden && slideCount === n
                                 ? 'bg-orange-500 text-black font-semibold'
+                                : slideCount === n
+                                ? 'bg-zinc-800 text-orange-300'
                                 : 'text-zinc-400 hover:text-zinc-100'
                             }`}
                           >
@@ -1158,7 +1265,10 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                       className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-black text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-45 whitespace-nowrap"
                     >
                       <Sparkles size={14} />
-                      <span>Generate {slideCount}-Slide Deck</span>
+                      <span>
+                        Generate {effectiveSlideCount}-Slide Deck
+                        {slideCountOverridden ? ' (from prompt)' : ''}
+                      </span>
                     </button>
                   </div>
                 </div>
@@ -1588,8 +1698,157 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                       </div>
                     )}
 
+                    {/* Table Editor (Comparison Table Layout) */}
+                    {activeSlide.layout === 'table' && activeSlide.table && (
+                      <div className="space-y-3 pt-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-zinc-400">
+                            Table ({activeSlide.table.headers.length} cols × {activeSlide.table.rows.length} rows)
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={activeSlide.table.headers.length >= 6}
+                              onClick={() => {
+                                const tbl = activeSlide.table!;
+                                updateActiveSlide({
+                                  table: {
+                                    headers: [...tbl.headers, `Col ${tbl.headers.length + 1}`],
+                                    rows: tbl.rows.map((r) => [...r, ''])
+                                  }
+                                });
+                              }}
+                              className="text-[11px] text-zinc-400 hover:text-orange-300 disabled:opacity-35 flex items-center gap-0.5"
+                            >
+                              <Plus size={11} />
+                              <span>Col</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={activeSlide.table.rows.length >= 8}
+                              onClick={() => {
+                                const tbl = activeSlide.table!;
+                                updateActiveSlide({
+                                  table: {
+                                    headers: [...tbl.headers],
+                                    rows: [...tbl.rows, tbl.headers.map(() => '')]
+                                  }
+                                });
+                              }}
+                              className="text-[11px] text-orange-400 hover:text-orange-300 disabled:opacity-35 flex items-center gap-0.5"
+                            >
+                              <Plus size={11} />
+                              <span>Row</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Column Headers */}
+                        <div className="space-y-1">
+                          <span className="text-[11px] text-zinc-500">Headers</span>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {activeSlide.table.headers.map((hdr, hi) => (
+                              <div key={hi} className="flex items-center gap-1">
+                                <input
+                                  type="text"
+                                  value={hdr}
+                                  aria-label={`Column ${hi + 1} header`}
+                                  onChange={(e) => {
+                                    const tbl = activeSlide.table!;
+                                    const nextHeaders = [...tbl.headers];
+                                    nextHeaders[hi] = e.target.value;
+                                    updateActiveSlide({
+                                      table: { headers: nextHeaders, rows: tbl.rows }
+                                    });
+                                  }}
+                                  className="flex-1 min-w-0 bg-[#070709] border border-zinc-800 rounded-md px-2 py-1 text-xs font-semibold text-orange-300 focus:outline-none focus:border-orange-500/70"
+                                />
+                                {activeSlide.table!.headers.length > 2 && (
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove column ${hi + 1}`}
+                                    onClick={() => {
+                                      const tbl = activeSlide.table!;
+                                      updateActiveSlide({
+                                        table: {
+                                          headers: tbl.headers.filter((_, i) => i !== hi),
+                                          rows: tbl.rows.map((r) => r.filter((_, i) => i !== hi))
+                                        }
+                                      });
+                                    }}
+                                    className="p-1 text-zinc-600 hover:text-rose-400"
+                                  >
+                                    <X size={11} />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Table Rows */}
+                        <div className="space-y-2">
+                          <span className="text-[11px] text-zinc-500">Rows</span>
+                          {activeSlide.table.rows.map((row, ri) => (
+                            <div
+                              key={ri}
+                              className="p-2 rounded-lg bg-[#111115] border border-zinc-800/80 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-mono text-zinc-500">
+                                  Row {ri + 1}
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={activeSlide.table!.rows.length <= 1}
+                                  aria-label={`Remove row ${ri + 1}`}
+                                  onClick={() => {
+                                    const tbl = activeSlide.table!;
+                                    updateActiveSlide({
+                                      table: {
+                                        headers: tbl.headers,
+                                        rows: tbl.rows.filter((_, i) => i !== ri)
+                                      }
+                                    });
+                                  }}
+                                  className="p-0.5 text-zinc-500 hover:text-rose-400 disabled:opacity-30"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-1 gap-1.5">
+                                {activeSlide.table!.headers.map((hdr, ci) => (
+                                  <input
+                                    key={ci}
+                                    type="text"
+                                    value={row[ci] ?? ''}
+                                    placeholder={hdr || `Column ${ci + 1}`}
+                                    aria-label={`Row ${ri + 1} ${hdr || `Column ${ci + 1}`}`}
+                                    onChange={(e) => {
+                                      const tbl = activeSlide.table!;
+                                      const nextRows = tbl.rows.map((r, idx) => {
+                                        if (idx !== ri) return r;
+                                        const copy = [...r];
+                                        while (copy.length < tbl.headers.length) copy.push('');
+                                        copy[ci] = e.target.value;
+                                        return copy;
+                                      });
+                                      updateActiveSlide({
+                                        table: { headers: tbl.headers, rows: nextRows }
+                                      });
+                                    }}
+                                    className="w-full bg-[#070709] border border-zinc-800 rounded-md px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-orange-500/70"
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Primary Bullets Editor */}
-                    {activeSlide.layout !== 'title' && (
+                    {activeSlide.layout !== 'title' && activeSlide.layout !== 'table' && (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-zinc-400">

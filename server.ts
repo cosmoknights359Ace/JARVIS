@@ -17,6 +17,8 @@ import {
   searchWebImages,
   exportDeckToPptx
 } from './server/slidesEngine.ts';
+import { resolveAvailableOllamaModel } from './server/localJsonUtils.ts';
+import { consumeOllamaNdjson } from './server/ollamaStreamUtils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -190,114 +192,203 @@ async function startServer() {
         }
       };
 
-      // 1. Try local Ollama first if running on user's machine
+      // 1. Try local Ollama first (fast /api/tags probe, then generous model-load + stall watchdogs)
       const cleanHost = (ollamaHost || 'http://127.0.0.1:11434')
         .replace(/\/+$/, '')
         .replace('localhost', '127.0.0.1');
 
-      try {
-        const connectCtrl = new AbortController();
-        const connectTimeout = setTimeout(() => connectCtrl.abort(), 1500);
-        const onUpstreamAbort = () => connectCtrl.abort();
+      const ollamaProbe = await checkLocalOllamaServer(cleanHost);
+      if (ollamaProbe.reachable && !clientClosed) {
+        const effectiveModel = resolveAvailableOllamaModel(
+          modelName,
+          ollamaProbe.models,
+          'qwen2.5:3b'
+        );
+
+        // Immediately send SSE comment so proxies/browsers keep the connection alive while 7B loads
+        if (!res.writableEnded) {
+          res.write(': ollama-stream-init\n\n');
+        }
+
+        const ollamaAbort = new AbortController();
+        const onUpstreamAbort = () => ollamaAbort.abort();
         upstreamAbort.signal.addEventListener('abort', onUpstreamAbort, { once: true });
 
-        const ollamaMessages = [
-          {
-            role: 'system',
-            content:
-              systemInstruction ||
-              'You are J.A.R.V.I.S, a concise and technically accurate personal AI assistant.'
-          },
-          ...(Array.isArray(history)
-            ? history.slice(-6).map((m: any) => ({
-                role: m.role === 'user' ? 'user' : 'assistant',
-                content: String(m.content || '')
-              }))
-            : []),
-          { role: 'user', content: prompt }
-        ];
+        // 90s timeout for cold-loading 7B models into RAM/VRAM; tightened to 45s per chunk once streaming
+        let timedOutReason: string | null = null;
+        let stallTimer = setTimeout(() => {
+          timedOutReason = `Local Ollama timed out waiting for "${effectiveModel}" to start generating (90s). Check available RAM/VRAM or switch to a smaller model like qwen2.5:3b.`;
+          ollamaAbort.abort();
+        }, 90000);
 
-        const ollamaRes = await fetch(`${cleanHost}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: modelName,
-            messages: ollamaMessages,
-            stream: true,
-            keep_alive: `${keepAliveMinutes}m`,
-            options: {
-              temperature: Number(temperature) || 0.7,
-              num_predict: Number(maxTokens) || 1024
+        const resetChunkWatchdog = () => {
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(() => {
+            timedOutReason = `Local Ollama stalled mid-response on "${effectiveModel}" (no tokens for 45s).`;
+            ollamaAbort.abort();
+          }, 45000);
+        };
+
+        try {
+          const ollamaMessages = [
+            {
+              role: 'system',
+              content:
+                systemInstruction ||
+                'You are J.A.R.V.I.S, a concise and technically accurate personal AI assistant.'
+            },
+            ...(Array.isArray(history)
+              ? history.slice(-6).map((m: any) => ({
+                  role: m.role === 'user' ? 'user' : 'assistant',
+                  content: String(m.content || '')
+                }))
+              : []),
+            { role: 'user', content: prompt }
+          ];
+
+          const ollamaRes = await fetch(`${cleanHost}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: effectiveModel,
+              messages: ollamaMessages,
+              stream: true,
+              keep_alive: `${keepAliveMinutes}m`,
+              options: {
+                temperature: Number(temperature) || 0.7,
+                num_ctx: 4096,
+                num_predict: Number(maxTokens) || 1024
+              }
+            }),
+            signal: ollamaAbort.signal
+          });
+
+          if (!ollamaRes.ok) {
+            let errBody = '';
+            try {
+              const errJson: any = await ollamaRes.json();
+              errBody = errJson?.error || '';
+            } catch {
+              // ignore non-json error body
             }
-          }),
-          signal: connectCtrl.signal
-        });
+            clearTimeout(stallTimer);
+            upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
+            if (!getAiClient()) {
+              writeEvent({
+                error:
+                  errBody ||
+                  `Ollama returned HTTP ${ollamaRes.status} for model "${effectiveModel}". Run "ollama list" to confirm it is installed.`
+              });
+              endStream();
+              return;
+            }
+          } else if (ollamaRes.body) {
+            const reader = ollamaRes.body.getReader();
+            const decoder = new TextDecoder();
+            let ndjsonCarry = '';
+            let hasOutput = false;
+            let ttftMs: number | null = null;
+            let totalChars = 0;
+            let streamDone = false;
+            let ollamaErr: string | null = null;
 
-        clearTimeout(connectTimeout);
-        upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
+            while (!clientClosed && !streamDone) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              resetChunkWatchdog();
 
-        if (ollamaRes.ok && ollamaRes.body) {
-          const reader = ollamaRes.body.getReader();
-          const decoder = new TextDecoder();
-          let hasOutput = false;
-          let ttftMs: number | null = null;
-          let totalChars = 0;
+              const chunkText = decoder.decode(value, { stream: true });
+              const { events, remainder } = consumeOllamaNdjson(ndjsonCarry, chunkText);
+              ndjsonCarry = remainder;
 
-          while (!clientClosed) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunkText = decoder.decode(value, { stream: true });
-            const lines = chunkText.split('\n').filter((l) => l.trim());
-            for (const line of lines) {
-              try {
-                const parsed = JSON.parse(line);
-                if (parsed.message?.content) {
-                  const piece = String(parsed.message.content);
+              for (const evt of events) {
+                if (evt.error) {
+                  ollamaErr = evt.error;
+                  streamDone = true;
+                  break;
+                }
+                if (evt.text) {
                   if (!hasOutput) {
                     hasOutput = true;
                     ttftMs = Math.max(1, Date.now() - requestStart);
                     writeEvent({
                       meta: {
                         provider: 'ollama',
-                        model: modelName,
+                        model: effectiveModel,
                         ttftMs
                       }
                     });
                   }
-                  totalChars += piece.length;
-                  writeEvent({ text: piece });
+                  totalChars += evt.text.length;
+                  writeEvent({ text: evt.text });
                 }
-              } catch {
-                // partial json line
+                if (evt.done) {
+                  streamDone = true;
+                  break;
+                }
               }
             }
-          }
 
-          if (clientClosed) {
-            reader.cancel().catch(() => {});
-            return;
-          }
-
-          if (hasOutput) {
-            const elapsedMs = Math.max(1, Date.now() - requestStart);
-            const approxTokens = Math.max(1, Math.round(totalChars / 4));
-            const tokensPerSec = Number((approxTokens / (elapsedMs / 1000)).toFixed(1));
-            writeEvent({
-              stats: {
-                provider: 'ollama',
-                model: modelName,
-                ttftMs: ttftMs ?? elapsedMs,
-                elapsedMs,
-                tokensPerSec
+            // Flush any final line without trailing newline
+            if (!clientClosed && !streamDone && ndjsonCarry.trim()) {
+              const { events } = consumeOllamaNdjson('', ndjsonCarry + '\n');
+              for (const evt of events) {
+                if (evt.error) {
+                  ollamaErr = evt.error;
+                } else if (evt.text) {
+                  if (!hasOutput) {
+                    hasOutput = true;
+                    ttftMs = Math.max(1, Date.now() - requestStart);
+                    writeEvent({
+                      meta: { provider: 'ollama', model: effectiveModel, ttftMs }
+                    });
+                  }
+                  totalChars += evt.text.length;
+                  writeEvent({ text: evt.text });
+                }
               }
-            });
+            }
+
+            clearTimeout(stallTimer);
+            upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
+            reader.cancel().catch(() => {});
+
+            if (clientClosed) return;
+
+            if (ollamaErr) {
+              writeEvent({ error: `Local Ollama error (${effectiveModel}): ${ollamaErr}` });
+              endStream();
+              return;
+            }
+
+            if (hasOutput) {
+              const elapsedMs = Math.max(1, Date.now() - requestStart);
+              const approxTokens = Math.max(1, Math.round(totalChars / 4));
+              const tokensPerSec = Number((approxTokens / (elapsedMs / 1000)).toFixed(1));
+              writeEvent({
+                stats: {
+                  provider: 'ollama',
+                  model: effectiveModel,
+                  ttftMs: ttftMs ?? elapsedMs,
+                  elapsedMs,
+                  tokensPerSec
+                }
+              });
+              endStream();
+              return;
+            }
+          }
+        } catch (err: any) {
+          clearTimeout(stallTimer);
+          upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
+          if (clientClosed) return;
+          if (timedOutReason && !getAiClient()) {
+            writeEvent({ error: timedOutReason });
             endStream();
             return;
           }
+          // Otherwise fall through to Gemini Cloud if configured, or report error below
         }
-      } catch {
-        if (clientClosed) return;
-        // Local Ollama unreachable; proceed to Gemini Cloud engine
       }
 
       // 2. Stream via Gemini Cloud (gemini-4-hydrogen)

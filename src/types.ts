@@ -117,7 +117,13 @@ export type SlideLayoutType =
   | 'bullets'
   | 'split_image'
   | 'two_column'
-  | 'stat_highlight';
+  | 'stat_highlight'
+  | 'table';
+
+export interface SlideTableData {
+  headers: string[];
+  rows: string[][];
+}
 
 export type SlideAudience = 'executive' | 'technical' | 'educational' | 'pitch';
 
@@ -139,6 +145,7 @@ export interface SlideItem {
   subtitle?: string;
   bullets: string[];
   secondaryBullets?: string[];
+  table?: SlideTableData;
   highlightStat?: {
     value: string;
     label: string;

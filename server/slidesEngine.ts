@@ -26,6 +26,12 @@ import {
   extractJsonPayload,
   resolveAvailableOllamaModel
 } from './localJsonUtils.ts';
+import {
+  normalizeSlideItem,
+  resolveTargetSlideCount,
+  sanitizeSlideText,
+  validateDeckJson
+} from './slidesUtils.ts';
 
 const PptxGenJS: any = (PptxGenJSModule as any).default || PptxGenJSModule;
 
@@ -96,109 +102,8 @@ export const SLIDE_THEMES: Record<SlideThemeId, SlideThemePalette> = {
 };
 
 // ============================================================================
-// 1. Safe Normalization & Grounded Prompt Builders
+// 1. Grounded, Anti-Repetition Prompt Builder with Table & Exact-Count Rules
 // ============================================================================
-
-const VALID_LAYOUTS: SlideLayoutType[] = [
-  'title',
-  'bullets',
-  'split_image',
-  'two_column',
-  'stat_highlight'
-];
-
-function clampSlideCount(n: number): number {
-  if (!Number.isFinite(n)) return 8;
-  return Math.max(4, Math.min(15, Math.round(n)));
-}
-
-function sanitizeText(val: unknown, fallback = '', maxLen = 400): string {
-  if (typeof val !== 'string') return fallback;
-  return val
-    .replace(/\r\n/g, '\n')
-    .replace(/```(?:\w+)?\n?/g, '')
-    .replace(/```/g, '')
-    .trim()
-    .slice(0, maxLen);
-}
-
-function sanitizeBullets(val: unknown, maxItems = 6): string[] {
-  if (!Array.isArray(val)) return [];
-  return val
-    .map((item) => sanitizeText(item, '', 220).replace(/^[\s•\-*]+/, '').trim())
-    .filter(Boolean)
-    .slice(0, maxItems);
-}
-
-function normalizeSlide(raw: any, index: number, total: number, topic: string): SlideItem {
-  let layout: SlideLayoutType = VALID_LAYOUTS.includes(raw?.layout)
-    ? raw.layout
-    : index === 0
-    ? 'title'
-    : index % 2 === 1
-    ? 'split_image'
-    : 'bullets';
-
-  if (index === 0) layout = 'title';
-
-  const title = sanitizeText(raw?.title, index === 0 ? topic : `Slide ${index + 1}`, 120);
-  const kicker = sanitizeText(
-    raw?.kicker,
-    index === 0 ? 'Presentation Briefing' : `Section ${String(index).padStart(2, '0')}`,
-    60
-  );
-  const subtitle = sanitizeText(raw?.subtitle, '', 180);
-  let bullets = sanitizeBullets(raw?.bullets, 6);
-  let secondaryBullets = sanitizeBullets(raw?.secondaryBullets, 5);
-
-  if (layout !== 'title' && bullets.length === 0) {
-    bullets = [subtitle || `Core insights on ${title}.`];
-  }
-
-  if (layout === 'two_column' && secondaryBullets.length === 0 && bullets.length >= 2) {
-    const mid = Math.ceil(bullets.length / 2);
-    secondaryBullets = bullets.slice(mid);
-    bullets = bullets.slice(0, mid);
-  }
-
-  const statVal = sanitizeText(raw?.highlightStat?.value, '', 24);
-  const statLbl = sanitizeText(raw?.highlightStat?.label, '', 90);
-  const highlightStat =
-    layout === 'stat_highlight'
-      ? {
-          value: statVal || `${Math.max(2, total)}x`,
-          label: statLbl || title
-        }
-      : statVal
-      ? { value: statVal, label: statLbl }
-      : undefined;
-
-  const speakerNotes = sanitizeText(
-    raw?.speakerNotes,
-    `Walk the audience through ${title}, emphasizing the key factual takeaways.`,
-    900
-  );
-
-  const imageQuery = sanitizeText(
-    raw?.imageQuery,
-    `${topic.split(/\s+/).slice(0, 3).join(' ')} ${title.split(/\s+/).slice(0, 2).join(' ')}`.trim(),
-    80
-  );
-
-  return {
-    id: `slide_${Date.now()}_${index + 1}_${Math.random().toString(36).slice(2, 5)}`,
-    layout,
-    kicker,
-    title,
-    subtitle: subtitle || undefined,
-    bullets,
-    secondaryBullets: secondaryBullets.length > 0 ? secondaryBullets : undefined,
-    highlightStat,
-    speakerNotes,
-    imageQuery,
-    image: null
-  };
-}
 
 export interface GenerateDeckRequest {
   topic: string;
@@ -213,37 +118,54 @@ export interface GenerateDeckRequest {
   keepAliveMinutes: number;
 }
 
-function buildDeckPrompt(req: GenerateDeckRequest): { system: string; user: string } {
-  const count = clampSlideCount(req.slideCount);
+function buildDeckPrompt(
+  req: GenerateDeckRequest,
+  targetCount: number,
+  correctiveIssues?: string[]
+): { system: string; user: string } {
   const audienceStyle: Record<SlideAudience, string> = {
-    executive: 'Executive leadership briefing: sharp strategic takeaways, clear business impact, concise phrasing.',
-    technical: 'Engineering & architecture audience: concrete technical accuracy, trade-offs, system mechanisms.',
-    educational: 'Educational & structured teaching style: progressive concept build-up, clear definitions, memorable examples.',
-    pitch: 'Persuasive investor/stakeholder pitch: clear problem framing, solution value, execution roadmap.'
+    executive:
+      'Executive leadership briefing: sharp strategic takeaways, clear business impact, and concrete operational trade-offs.',
+    technical:
+      'Engineering & architecture audience: exact definitions, formulas, Big-O complexity bounds, protocols, and real system trade-offs rather than vague summaries.',
+    educational:
+      'Educational & structured teaching style: progressive concept build-up, exact definitions, formulas/mechanisms, and memorable concrete examples.',
+    pitch:
+      'Persuasive stakeholder pitch: sharp problem framing, concrete mechanism of the solution, and realistic execution milestones.'
   };
 
+  const wantsTable = /\b(table|compar(?:e|ison)|matrix|vs\.?|versus|benchmark|trade-?offs?)\b/i.test(
+    `${req.topic} ${req.contextNotes || ''}`
+  );
+
   const system = `You are J.A.R.V.I.S Slides, a precision presentation architect.
-Rules:
-1. Generate EXACTLY ${count} slides for the user's topic.
-2. ${audienceStyle[req.audience] || audienceStyle.executive}
-3. Grounding & Anti-Hallucination: Prioritize facts from CONTEXT_NOTES and MEMORY_BANK when provided. Never fabricate fake company revenue, fake citations, or fake statistics. Only use a "stat_highlight" layout if a factual/grounded metric or well-known benchmark applies.
-4. Slide 1 MUST use layout "title". Vary remaining slides cleanly across "split_image", "bullets", "two_column", and "stat_highlight" so the deck feels thoughtfully paced (at least half should use "split_image" for strong visual balance).
-5. Keep bullets crisp and scannable (max 3–5 bullets per slide, under 18 words each). Never write walls of text.
-6. Every slide MUST include helpful, natural presenter "speakerNotes" (2–3 sentences) and a clean 2–5 word English "imageQuery" suitable for searching public photography/diagrams on Wikimedia Commons (concrete visual nouns, no quotes or punctuation).
-7. Return ONLY valid JSON matching:
+Strict Rules:
+1. EXACT SLIDE COUNT: Output EXACTLY ${targetCount} slides in the "slides" array—no more, no fewer. Do NOT append extra "Benchmark" or "Summary" slides beyond ${targetCount}.
+2. AUDIENCE & TECHNICAL DEPTH: ${audienceStyle[req.audience] || audienceStyle.executive} For technical topics, include exact definitions, formulas, complexity bounds (e.g. Big-O), and concrete trade-offs rather than vague summaries.
+3. ANTI-REPETITION: Never repeat the same fact, metric, or bullet point across different slides. Every slide must cover a distinct angle or subtopic.
+4. GROUNDING & ZERO PLACEHOLDERS: Prioritize facts from CONTEXT_NOTES and MEMORY_BANK when provided. Never fabricate fake revenue, citations, or statistics. Never write generic placeholder text like "Core insights on..." or "Walk the audience through...".
+5. SLIDE LAYOUTS & TABLES:
+   - Slide 1 MUST use "layout": "title" with a compelling "title" and "subtitle".
+   - Use "layout": "table" with "headers": [string, ...] (2-5 columns) and "rows": [[string, ...], ...] (2-6 rows) whenever comparing concepts, architectures, metrics, or trade-offs${wantsTable ? ' (REQUIRED: include at least one "table" slide for this prompt)' : ''}.
+   - Use "bullets", "split_image", "two_column", or "stat_highlight" for remaining slides.
+   - Keep bullets concise and information-dense (3-5 bullets per slide, max 18 words each).
+6. SPEAKER NOTES: Every single slide MUST include a non-empty "speaker_notes" string (2-3 concrete presenter sentences adding context beyond reading the bullets verbatim) and a clean 2-5 word English "imageQuery" for Wikimedia Commons.
+7. STRICT JSON: Output ONLY valid JSON with properly escaped quotes (\\") inside strings and zero trailing commas, matching:
 {
   "title": string,
   "subtitle": string,
   "slides": [
     {
-      "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight",
+      "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table",
       "kicker": string,
       "title": string,
       "subtitle": string,
       "bullets": string[],
       "secondaryBullets": string[],
+      "headers": string[],
+      "rows": string[][],
       "highlightStat": { "value": string, "label": string },
-      "speakerNotes": string,
+      "speaker_notes": string,
       "imageQuery": string
     }
   ]
@@ -253,19 +175,19 @@ Rules:
     ? Object.entries(req.memory || {}).map(([k, v]) => `- ${k}: ${v}`)
     : [];
 
-  const user = JSON.stringify(
-    {
-      TOPIC: req.topic.trim(),
-      TARGET_SLIDE_COUNT: count,
-      AUDIENCE: req.audience,
-      CONTEXT_NOTES: req.contextNotes?.trim() || '(none provided)',
-      MEMORY_BANK: memLines.length > 0 ? memLines : ['(not included)']
-    },
-    null,
-    2
-  );
+  const userObj: Record<string, unknown> = {
+    TOPIC: req.topic.trim(),
+    EXACT_SLIDE_COUNT: targetCount,
+    AUDIENCE: req.audience,
+    CONTEXT_NOTES: req.contextNotes?.trim() || '(none provided)',
+    MEMORY_BANK: memLines.length > 0 ? memLines : ['(not included)']
+  };
 
-  return { system, user };
+  if (correctiveIssues && correctiveIssues.length > 0) {
+    userObj.CORRECTION_REQUIRED = `Your previous JSON failed validation. Fix ALL of these issues and return the complete valid JSON with EXACTLY ${targetCount} slides: ${correctiveIssues.join(' | ')}`;
+  }
+
+  return { system, user: JSON.stringify(userObj, null, 2) };
 }
 
 // ============================================================================
@@ -400,22 +322,99 @@ export async function generateSlideDeck(
   }
 
   const started = Date.now();
-  const count = clampSlideCount(req.slideCount);
-  const { system, user } = buildDeckPrompt(req);
+  const { count } = resolveTargetSlideCount(topic, req.slideCount);
+  const initialPrompt = buildDeckPrompt(req, count);
 
-  const ollamaOut = await callOllamaJson(
-    system,
-    user,
+  const deckSchema = {
+    type: Type.OBJECT,
+    properties: {
+      title: { type: Type.STRING },
+      subtitle: { type: Type.STRING },
+      slides: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            layout: { type: Type.STRING },
+            kicker: { type: Type.STRING },
+            title: { type: Type.STRING },
+            subtitle: { type: Type.STRING },
+            bullets: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            secondaryBullets: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            headers: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            rows: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              }
+            },
+            highlightStat: {
+              type: Type.OBJECT,
+              properties: {
+                value: { type: Type.STRING },
+                label: { type: Type.STRING }
+              }
+            },
+            speaker_notes: { type: Type.STRING },
+            imageQuery: { type: Type.STRING }
+          },
+          required: ['layout', 'title', 'speaker_notes', 'imageQuery']
+        }
+      }
+    },
+    required: ['title', 'slides']
+  };
+
+  let provider: 'ollama' | 'gemini' = 'ollama';
+  let model = req.modelName || DEFAULT_STUDIO_MODEL;
+  let parsed: any = null;
+
+  const ollamaFirst = await callOllamaJson(
+    initialPrompt.system,
+    initialPrompt.user,
     req.ollamaHost,
     req.modelName,
     req.keepAliveMinutes
   );
 
-  let parsed: any = ollamaOut?.data ?? null;
-  let provider: 'ollama' | 'gemini' = 'ollama';
-  let model = ollamaOut?.modelUsed || req.modelName || DEFAULT_STUDIO_MODEL;
+  if (ollamaFirst?.data && Array.isArray(ollamaFirst.data.slides) && ollamaFirst.data.slides.length > 0) {
+    parsed = ollamaFirst.data;
+    model = ollamaFirst.modelUsed;
 
-  if (!parsed || !Array.isArray(parsed.slides) || parsed.slides.length === 0) {
+    // Validate exact slide count, speaker notes, tables, and anti-placeholder rules; retry once if needed
+    const check = validateDeckJson(parsed, count);
+    if (!check.valid) {
+      const retryPrompt = buildDeckPrompt(req, count, check.issues);
+      const ollamaRetry = await callOllamaJson(
+        retryPrompt.system,
+        retryPrompt.user,
+        req.ollamaHost,
+        model,
+        req.keepAliveMinutes
+      );
+      if (ollamaRetry?.data && Array.isArray(ollamaRetry.data.slides) && ollamaRetry.data.slides.length > 0) {
+        const retryCheck = validateDeckJson(ollamaRetry.data, count);
+        if (
+          retryCheck.valid ||
+          Math.abs(ollamaRetry.data.slides.length - count) < Math.abs(parsed.slides.length - count) ||
+          retryCheck.issues.length < check.issues.length
+        ) {
+          parsed = ollamaRetry.data;
+          model = ollamaRetry.modelUsed;
+        }
+      }
+    }
+  } else {
     if (!aiClient) {
       throw new Error(
         'Local Ollama is offline and no GEMINI_API_KEY is configured. Start Ollama locally or configure an API key in Settings > Secrets.'
@@ -423,48 +422,32 @@ export async function generateSlideDeck(
     }
 
     provider = 'gemini';
-    const deckSchema = {
-      type: Type.OBJECT,
-      properties: {
-        title: { type: Type.STRING },
-        subtitle: { type: Type.STRING },
-        slides: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              layout: { type: Type.STRING },
-              kicker: { type: Type.STRING },
-              title: { type: Type.STRING },
-              subtitle: { type: Type.STRING },
-              bullets: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              },
-              secondaryBullets: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              },
-              highlightStat: {
-                type: Type.OBJECT,
-                properties: {
-                  value: { type: Type.STRING },
-                  label: { type: Type.STRING }
-                }
-              },
-              speakerNotes: { type: Type.STRING },
-              imageQuery: { type: Type.STRING }
-            },
-            required: ['layout', 'title', 'bullets', 'speakerNotes', 'imageQuery']
-          }
-        }
-      },
-      required: ['title', 'slides']
-    };
+    const geminiFirst = await generateJsonWithGemini(
+      aiClient,
+      initialPrompt.system,
+      initialPrompt.user,
+      deckSchema
+    );
+    parsed = geminiFirst.parsed;
+    model = geminiFirst.model;
 
-    const geminiOut = await generateJsonWithGemini(aiClient, system, user, deckSchema);
-    parsed = geminiOut.parsed;
-    model = geminiOut.model;
+    const check = validateDeckJson(parsed, count);
+    if (!check.valid) {
+      const retryPrompt = buildDeckPrompt(req, count, check.issues);
+      const geminiRetry = await generateJsonWithGemini(
+        aiClient,
+        retryPrompt.system,
+        retryPrompt.user,
+        deckSchema
+      );
+      if (Array.isArray(geminiRetry.parsed?.slides) && geminiRetry.parsed.slides.length > 0) {
+        const retryCheck = validateDeckJson(geminiRetry.parsed, count);
+        if (retryCheck.valid || retryCheck.issues.length < check.issues.length) {
+          parsed = geminiRetry.parsed;
+          model = geminiRetry.model;
+        }
+      }
+    }
   }
 
   const rawSlides: any[] = Array.isArray(parsed?.slides) ? parsed.slides : [];
@@ -472,17 +455,15 @@ export async function generateSlideDeck(
     throw new Error('The AI engine returned an empty slide outline. Please retry.');
   }
 
+  // Strictly cap at target count — never append auto-injected Benchmark or Summary slides
   const normalizedSlides = rawSlides
-    .slice(0, Math.max(count, 15))
-    .map((s, idx) => normalizeSlide(s, idx, rawSlides.length, topic));
+    .slice(0, count)
+    .map((s, idx) => normalizeSlideItem(s, idx, topic));
 
   const now = new Date().toISOString();
-  const deckTitle = sanitizeText(parsed?.title, normalizedSlides[0]?.title || topic, 120);
-  const deckSubtitle = sanitizeText(
-    parsed?.subtitle,
-    normalizedSlides[0]?.subtitle || `Prepared with J.A.R.V.I.S Slides`,
-    180
-  );
+  const deckTitle = sanitizeSlideText(parsed?.title, 120) || normalizedSlides[0]?.title || topic;
+  const deckSubtitle =
+    sanitizeSlideText(parsed?.subtitle, 180) || normalizedSlides[0]?.subtitle || '';
 
   const deck: SlideDeck = {
     id: `deck_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -520,18 +501,22 @@ export async function regenerateSingleSlide(
   },
   aiClient: GoogleGenAI | null
 ): Promise<{ slide: SlideItem; provider: 'ollama' | 'gemini'; model: string }> {
-  const system = `You are J.A.R.V.I.S Slides. Rewrite and improve ONE presentation slide accurately without hallucinations.
-Keep bullets concise (3-5 bullets, max 18 words each), preserve factual grounding, provide natural presenter speakerNotes (2-3 sentences), and output a clean 2-5 word English imageQuery for Wikimedia Commons.
+  const system = `You are J.A.R.V.I.S Slides. Rewrite and improve ONE presentation slide accurately without hallucinations or filler.
+- For technical topics, include exact definitions, formulas, complexity bounds, and concrete trade-offs.
+- Support "table" layout with "headers" and "rows" when comparing concepts/metrics.
+- Keep bullets concise (3-5 bullets, max 18 words each), provide concrete presenter "speaker_notes" (2-3 sentences), and output a clean 2-5 word English "imageQuery" for Wikimedia Commons.
 Return ONLY valid JSON:
 {
-  "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight",
+  "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table",
   "kicker": string,
   "title": string,
   "subtitle": string,
   "bullets": string[],
   "secondaryBullets": string[],
+  "headers": string[],
+  "rows": string[][],
   "highlightStat": { "value": string, "label": string },
-  "speakerNotes": string,
+  "speaker_notes": string,
   "imageQuery": string
 }`;
 
@@ -548,10 +533,12 @@ Return ONLY valid JSON:
         subtitle: params.slide.subtitle || '',
         bullets: params.slide.bullets,
         secondaryBullets: params.slide.secondaryBullets || [],
-        speakerNotes: params.slide.speakerNotes
+        headers: params.slide.table?.headers || [],
+        rows: params.slide.table?.rows || [],
+        speaker_notes: params.slide.speakerNotes
       },
       REFINEMENT_INSTRUCTION:
-        params.instruction?.trim() || 'Make this slide sharper, clearer, and more impactful.',
+        params.instruction?.trim() || 'Make this slide sharper, clearer, and more technically concrete.',
       CONTEXT_NOTES: params.contextNotes?.trim() || '(none)'
     },
     null,
@@ -584,6 +571,11 @@ Return ONLY valid JSON:
         subtitle: { type: Type.STRING },
         bullets: { type: Type.ARRAY, items: { type: Type.STRING } },
         secondaryBullets: { type: Type.ARRAY, items: { type: Type.STRING } },
+        headers: { type: Type.ARRAY, items: { type: Type.STRING } },
+        rows: {
+          type: Type.ARRAY,
+          items: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
         highlightStat: {
           type: Type.OBJECT,
           properties: {
@@ -591,17 +583,17 @@ Return ONLY valid JSON:
             label: { type: Type.STRING }
           }
         },
-        speakerNotes: { type: Type.STRING },
+        speaker_notes: { type: Type.STRING },
         imageQuery: { type: Type.STRING }
       },
-      required: ['layout', 'title', 'bullets', 'speakerNotes', 'imageQuery']
+      required: ['layout', 'title', 'speaker_notes', 'imageQuery']
     };
     const geminiOut = await generateJsonWithGemini(aiClient, system, user, slideSchema);
     parsed = geminiOut.parsed;
     model = geminiOut.model;
   }
 
-  const normalized = normalizeSlide(parsed, params.slideIndex, params.totalSlides, params.topic);
+  const normalized = normalizeSlideItem(parsed, params.slideIndex, params.topic);
   normalized.id = params.slide.id;
   normalized.image = params.slide.image || null;
 
@@ -748,12 +740,12 @@ async function searchOpenverse(query: string, limit = 6): Promise<SlideImageAsse
       if (!url || !isSafePublicImageUrl(url) || !isSafePublicImageUrl(thumbUrl)) continue;
       if (/\.svg(\?|$)/i.test(url)) continue;
 
-      const creator = sanitizeText(item?.creator, 'Creator', 50);
-      const license = sanitizeText(item?.license, 'CC', 30).toUpperCase();
+      const creator = sanitizeSlideText(item?.creator, 50) || 'Creator';
+      const license = (sanitizeSlideText(item?.license, 30) || 'CC').toUpperCase();
       results.push({
         url,
         thumbUrl,
-        caption: sanitizeText(item?.title, query, 80),
+        caption: sanitizeSlideText(item?.title, 80) || query,
         credit: `${creator} · ${license}`,
         source: 'openverse',
         width: Number(item?.width) || undefined,
@@ -783,7 +775,7 @@ export async function searchWebImages(
     throw err;
   }
 
-  const cleanQuery = sanitizeText(query, '', 100);
+  const cleanQuery = sanitizeSlideText(query, 100);
   if (!cleanQuery) return [];
 
   const primary = await searchWikimediaCommons(cleanQuery, limit);
@@ -1115,6 +1107,49 @@ export async function exportDeckToPptx(deck: SlideDeck): Promise<{
           h: 2.85,
           valign: 'top',
           fit: 'shrink'
+        });
+      } else if (slide.layout === 'table' && slide.table && slide.table.headers.length > 0) {
+        const colCount = slide.table.headers.length;
+        const totalTableW = 8.6;
+        const colW = Array.from({ length: colCount }, () =>
+          Number((totalTableW / colCount).toFixed(2))
+        );
+        const headerRow = slide.table.headers.map((header) => ({
+          text: header,
+          options: {
+            bold: true,
+            fontFace: FONT_BODY,
+            fontSize: 12,
+            color: theme.isDark ? '09090D' : 'FFFFFF',
+            fill: { color: theme.accent },
+            align: 'left' as const,
+            valign: 'middle' as const,
+            margin: [6, 8, 6, 8]
+          }
+        }));
+        const dataRows = slide.table.rows.map((row, rIdx) =>
+          row.slice(0, colCount).map((cellText, cIdx) => ({
+            text: cellText,
+            options: {
+              bold: cIdx === 0,
+              fontFace: FONT_BODY,
+              fontSize: 11,
+              color: theme.text,
+              fill: { color: rIdx % 2 === 0 ? theme.surface : theme.bg },
+              align: 'left' as const,
+              valign: 'middle' as const,
+              margin: [6, 8, 6, 8]
+            }
+          }))
+        );
+
+        pptSlide.addTable([headerRow, ...dataRows], {
+          x: 0.7,
+          y: 1.72,
+          w: totalTableW,
+          colW,
+          border: { type: 'solid', color: theme.border, pt: 0.75 },
+          autoPage: false
         });
       } else if (slide.layout === 'stat_highlight') {
         // Big metric callout surface on the left, supporting points on the right
