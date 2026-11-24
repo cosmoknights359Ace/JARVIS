@@ -15,8 +15,8 @@ export const ArcReactor: React.FC<ArcReactorProps> = ({
 }) => {
   return (
     <div
-      className={`relative flex items-center justify-center select-none pointer-events-none ${
-        ambient ? 'opacity-30' : ''
+      className={`relative flex items-center justify-center select-none pointer-events-none transition-opacity duration-300 ${
+        ambient ? 'opacity-[0.04]' : ''
       }`}
       style={{ width: size, height: size }}
     >
@@ -24,7 +24,7 @@ export const ArcReactor: React.FC<ArcReactorProps> = ({
         viewBox="0 0 220 220"
         className="w-full h-full overflow-visible"
         style={{
-          filter: isActive
+          filter: isActive && !ambient
             ? 'drop-shadow(0 0 18px rgba(249, 115, 22, 0.38))'
             : 'none'
         }}

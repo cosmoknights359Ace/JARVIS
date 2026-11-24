@@ -98,14 +98,18 @@ export const Topbar: React.FC<TopbarProps> = ({
         })}
       </nav>
 
-      {/* Zone 3: 1 primary action */}
+      {/* Zone 3: Secondary guide action (subtle outlined style so composer Send stays primary) */}
       <div className="flex items-center gap-3 shrink-0">
         <button
           type="button"
           onClick={onOpenCapabilities}
-          className="px-4 py-2 text-xs font-semibold text-black bg-orange-500 hover:bg-orange-400 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          title="Open Commands & Guide (Ctrl+K)"
+          className="px-3.5 py-1.5 text-xs font-semibold text-orange-400 bg-orange-500/12 hover:bg-orange-500/20 border border-orange-500/30 hover:border-orange-500/50 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-2"
         >
-          Commands & Guide
+          <span>Commands & Guide</span>
+          <kbd className="hidden sm:inline font-mono text-[10px] text-orange-300/75 bg-orange-500/10 border border-orange-500/20 rounded px-1.5 py-0.5">
+            Ctrl+K
+          </kbd>
         </button>
       </div>
     </header>

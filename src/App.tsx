@@ -61,7 +61,14 @@ export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<NavView>('CHAT');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [showCapabilities, setShowCapabilities] = useState<boolean>(false);
-  const [showInspector, setShowInspector] = useState<boolean>(true);
+  const [showInspector, setShowInspector] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('jarvis_inspector_open_v1');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const [pendingConfirmation, setPendingConfirmation] = useState<'shutdown' | 'restart' | null>(
     null
@@ -165,6 +172,14 @@ export const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('jarvis_sessions_v3', JSON.stringify(sessions));
   }, [sessions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jarvis_inspector_open_v1', String(showInspector));
+    } catch {
+      // ignore storage errors
+    }
+  }, [showInspector]);
 
   const checkOllamaHealth = useCallback(async () => {
     const res = await probeLocalOllama(settings.ollamaHost);
@@ -690,6 +705,10 @@ export const App: React.FC = () => {
               onUpdateMemory={setMemory}
               stats={stats}
               showInspector={showInspector}
+              onToggleInspector={() => {
+                sfx.playClick();
+                setShowInspector((prev) => !prev);
+              }}
             />
           )}
 

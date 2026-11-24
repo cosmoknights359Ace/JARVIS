@@ -18,7 +18,9 @@ import {
   VolumeX,
   Pencil,
   ArrowDown,
-  AlertTriangle
+  AlertTriangle,
+  PanelRightClose,
+  PanelRightOpen
 } from 'lucide-react';
 import { ChatMessage, JarvisSettings, MemoryStore, SystemStats } from '../types';
 import { QUICK_SLASH_COMMANDS, QuickSlashCommand } from '../services/jarvisBrain';
@@ -46,6 +48,7 @@ interface ChatViewProps {
   onUpdateMemory: (newMem: MemoryStore) => void;
   stats: SystemStats;
   showInspector: boolean;
+  onToggleInspector: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -66,7 +69,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   memory,
   onUpdateMemory,
   stats,
-  showInspector
+  showInspector,
+  onToggleInspector
 }) => {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -319,8 +323,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assist')?.id;
 
+  const contentMaxWidthClass = showInspector ? 'max-w-3xl' : 'max-w-5xl';
+
   const renderComposerCard = () => (
-    <div className="w-full max-w-3xl mx-auto space-y-2 relative z-20">
+    <div className={`w-full ${contentMaxWidthClass} mx-auto space-y-2 relative z-20 transition-[max-width] duration-250 ease-out`}>
       {/* Keyboard-Navigable Slash-Command Autocomplete Menu */}
       {isSlashActive && filteredSlashCommands.length > 0 && (
         <div className="w-full rounded-xl bg-[#0F0F13] border border-orange-500/40 shadow-2xl overflow-hidden divide-y divide-zinc-800/80 mb-2">
@@ -548,10 +554,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
-      {/* Quiet Single-Line Keyboard Hint */}
-      <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500">
-        <span>Enter to send · Shift+Enter for new line · Type / for commands</span>
-        <span className="hidden sm:inline font-mono">Ctrl+K Guide</span>
+      {/* Minimal Single-Line Keyboard Hint */}
+      <div className="flex items-center justify-center px-1 text-[11px] text-zinc-500">
+        <span>Enter to send · Shift+Enter for new line</span>
       </div>
     </div>
   );
@@ -567,17 +572,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
     <div className="flex-1 flex min-h-0 bg-[#070709] relative">
       {/* Primary Stage */}
       <section className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
-        {/* Ambient Center Fade-In/Fade-Out Triangle when messages exist */}
+        {/* Re-open Right Sidebar Toggle when Collapsed (xl+) */}
+        {!showInspector && (
+          <button
+            type="button"
+            onClick={onToggleInspector}
+            title="Show Memory & Commands Sidebar"
+            aria-label="Expand right sidebar"
+            className="hidden xl:flex items-center justify-center p-2 rounded-lg bg-[#0A0A0D]/90 hover:bg-zinc-900 border border-zinc-800 hover:border-orange-500/40 text-zinc-400 hover:text-orange-400 shadow-lg transition-colors absolute top-4 right-4 z-30"
+          >
+            <PanelRightOpen size={15} />
+          </button>
+        )}
+
+        {/* Whisper-Subtle Ambient Triangle Watermark (4% opacity, static) during active chats */}
         {messages.length > 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
-            <ArcReactor size={240} pulsing={true} ambient={true} />
+            <ArcReactor size={240} isActive={false} pulsing={false} ambient={true} />
           </div>
         )}
 
         {messages.length === 0 ? (
           /* Centered Zero-State Stage when Session is Fresh */
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-8 flex flex-col items-center justify-center relative z-10">
-            <div className="w-full max-w-3xl mx-auto flex flex-col items-center text-center space-y-6">
+            <div className={`w-full ${contentMaxWidthClass} mx-auto flex flex-col items-center text-center space-y-6 transition-[max-width] duration-250 ease-out`}>
               <ArcReactor size={150} pulsing={true} />
 
               <div className="space-y-1.5">
@@ -606,7 +624,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6 relative z-10"
             >
-              <div className="max-w-3xl mx-auto space-y-6">
+              <div className={`${contentMaxWidthClass} mx-auto space-y-6 transition-[max-width] duration-250 ease-out`}>
                 {messages.map((m) => {
                   const isUser = m.role === 'user';
                   const isEditingThis = editingMsgId === m.id;
@@ -821,17 +839,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
       </section>
 
-      {/* Right-Hand Memory & Quick Commands Dock (xl+) */}
-      {showInspector && (
-        <aside className="hidden xl:flex w-80 shrink-0 bg-[#0A0A0D] border-l border-zinc-900 flex-col justify-between p-4 overflow-y-auto z-20">
+      {/* Right-Hand Collapsible Memory & Quick Commands Dock (xl+) */}
+      <div
+        aria-hidden={!showInspector}
+        className={`hidden xl:flex shrink-0 overflow-hidden transition-[width,opacity] duration-250 ease-out z-20 ${
+          showInspector
+            ? 'w-80 opacity-100 visible border-l border-zinc-900'
+            : 'w-0 opacity-0 invisible border-l-0 pointer-events-none'
+        }`}
+      >
+        <aside className="w-80 shrink-0 bg-[#0A0A0D] flex flex-col justify-between p-4 overflow-y-auto">
           <div className="space-y-6">
-            <div>
-              <h3 className="text-xs font-display font-semibold text-zinc-200">
-                Active Memory Bank
-              </h3>
-              <p className="text-[11px] text-zinc-500 mt-0.5">
-                Persisted facts injected into your assistant context.
-              </p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-xs font-display font-semibold text-zinc-200">
+                  Active Memory Bank
+                </h3>
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  Persisted facts injected into your assistant context.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleInspector}
+                title="Collapse Memory & Commands Sidebar"
+                aria-label="Collapse right sidebar"
+                className="p-2 rounded-lg border bg-orange-500/15 border-orange-500/40 text-orange-400 hover:bg-orange-500/25 transition-colors shrink-0"
+              >
+                <PanelRightClose size={15} />
+              </button>
             </div>
 
             {/* Quick Add Memory Form */}
@@ -854,7 +890,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
               <button
                 type="submit"
-                className="w-full py-1.5 px-3 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/30 text-orange-400 text-xs font-semibold transition-colors"
+                className="w-full py-1.5 px-3 rounded-lg bg-orange-500 hover:bg-orange-400 text-black text-xs font-semibold transition-colors"
               >
                 + Store Fact
               </button>
@@ -870,13 +906,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 Object.entries(memory).map(([k, v]) => (
                   <div
                     key={k}
-                    className="flex items-center justify-between gap-2 px-3 py-2.5 text-xs"
+                    className="flex items-start justify-between gap-2 px-3 py-2.5 text-xs"
                   >
-                    <div className="min-w-0">
-                      <div className="font-mono font-medium text-orange-400 truncate">
+                    <div className="flex-1 min-w-0">
+                      <div
+                        className="font-mono font-medium text-orange-400 break-words"
+                        title={k}
+                      >
                         {k}
                       </div>
-                      <div className="text-zinc-400 truncate">{v}</div>
+                      <div
+                        className="text-zinc-400 mt-0.5 leading-relaxed break-words line-clamp-3"
+                        title={v}
+                      >
+                        {v}
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -885,7 +929,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         delete next[k];
                         onUpdateMemory(next);
                       }}
-                      className="text-zinc-600 hover:text-rose-400 p-1 transition-colors shrink-0"
+                      className="text-zinc-600 hover:text-rose-400 p-1 -mt-0.5 transition-colors shrink-0"
                       title="Delete memory"
                       aria-label={`Delete ${k}`}
                     >
@@ -905,7 +949,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <button
                   type="button"
                   onClick={onOpenCapabilities}
-                  className="text-[11px] text-orange-400 hover:underline"
+                  className="text-[11px] text-zinc-400 hover:text-orange-400 transition-colors"
                 >
                   View All
                 </button>
@@ -926,12 +970,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           </div>
 
-          <div className="pt-4 border-t border-zinc-900 text-[11px] text-zinc-500 space-y-1">
-            <div>Routing: Sticky (3 turns)</div>
-            <div>Context Window: 6 turns</div>
+          {/* Bottom-Right Session Policy Card (mirrors bottom-left Engine Diagnostics) */}
+          <div className="pt-4 mt-4 border-t border-zinc-900 shrink-0">
+            <div className="p-3 rounded-xl bg-[#070709] border border-zinc-800/90 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-display font-semibold text-zinc-200">
+                  Session Policy
+                </span>
+              </div>
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-500">Routing</span>
+                  <span className="font-mono text-zinc-300 tabular-nums">
+                    Sticky (3 turns)
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-500">Context Window</span>
+                  <span className="font-mono text-zinc-300 tabular-nums">
+                    6 turns
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </aside>
-      )}
+      </div>
     </div>
   );
 };
