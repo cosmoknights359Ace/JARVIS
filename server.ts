@@ -825,9 +825,10 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
+  const parsedPort = Number(process.env.PORT);
+  const PORT = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 3000;
   const bootAttribution = verifyServerAttribution();
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`J.A.R.V.I.S server running on http://0.0.0.0:${PORT}`);
     console.log(
       `[Attribution] ${bootAttribution.short} · Seal ${bootAttribution.seal} · ${
@@ -835,6 +836,16 @@ async function startServer() {
       }`
     );
   });
+
+  const gracefulShutdown = () => {
+    httpServer.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
+
+  process.once('SIGTERM', gracefulShutdown);
+  process.once('SIGINT', gracefulShutdown);
 }
 
 startServer();

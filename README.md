@@ -1,7 +1,5 @@
 # J.A.R.V.I.S — Local-First Personal AI Assistant Workstation
 
-**WORK IN PROGRESS!!**
-
 > **Just A Rather Very Intelligent System** — A private, local-first AI command workstation powered by **[Ollama](https://ollama.com)**, featuring streaming chat with smart model routing, **Xfill** grounded Office document auto-fill (`.docx`, `.xlsx`, `.pptx`), **Xslide** 16:9 PowerPoint deck generation with consent-gated web imagery, persistent memory, voice synthesis/dictation, and built-in creator copyright verification.
 
 ![J.A.R.V.I.S](assets/jarvis_circle.png)
