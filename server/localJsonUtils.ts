@@ -161,5 +161,8 @@ export function resolveAvailableOllamaModel(
   const fallback = findMatch(fallbackModel);
   if (fallback) return fallback;
 
-  return requested;
+  const installedChatModel = installedModels.find(
+    (m) => !/(embed|vision|llava|moondream|bakllava)/i.test(m)
+  );
+  return installedChatModel || installedModels[0] || requested;
 }

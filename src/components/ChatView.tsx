@@ -733,6 +733,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               <span>Retry</span>
                             </button>
                           </div>
+                        ) : !m.content && isStreaming && isLatestAssist ? (
+                          <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
+                            <span className="inline-block w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
+                            <span>
+                              Generating with {m.model || stats.resolvedModel}...
+                            </span>
+                          </div>
                         ) : (
                           <MarkdownRenderer content={m.content} messageId={m.id} />
                         )}

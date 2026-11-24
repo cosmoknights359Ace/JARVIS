@@ -68,5 +68,13 @@ test('resolveAvailableOllamaModel prefers installed vai-doc tag and falls back g
     resolveAvailableOllamaModel('vai-doc:latest', ['qwen2.5:3b', 'qwen2.5-coder:7b'], 'qwen2.5:3b'),
     'qwen2.5:3b'
   );
+  assert.equal(
+    resolveAvailableOllamaModel(
+      'qwen2.5:3b',
+      ['llama3.2-vision:latest', 'qwen2.5-coder:3b', 'qwen2.5-coder:7b'],
+      'qwen2.5:3b'
+    ),
+    'qwen2.5-coder:3b'
+  );
   assert.equal(resolveAvailableOllamaModel(DEFAULT_STUDIO_MODEL, []), 'vai-doc:latest');
 });

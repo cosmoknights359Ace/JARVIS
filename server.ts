@@ -151,9 +151,14 @@ async function startServer() {
     let clientClosed = false;
     const upstreamAbort = new AbortController();
 
-    req.on('close', () => {
-      clientClosed = true;
-      upstreamAbort.abort();
+    // IMPORTANT: In Node.js 18+, `req` emits 'close' as soon as express.json() finishes
+    // consuming the POST body. Listen on `res` and check `!res.writableEnded` so we only
+    // abort when the client actually disconnects mid-stream (e.g. clicking Stop).
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientClosed = true;
+        upstreamAbort.abort();
+      }
     });
 
     try {
@@ -176,6 +181,8 @@ async function startServer() {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
 
       const requestStart = Date.now();
 
@@ -382,12 +389,15 @@ async function startServer() {
           clearTimeout(stallTimer);
           upstreamAbort.signal.removeEventListener('abort', onUpstreamAbort);
           if (clientClosed) return;
-          if (timedOutReason && !getAiClient()) {
-            writeEvent({ error: timedOutReason });
+          const failureReason =
+            timedOutReason ||
+            `Local Ollama request failed for "${effectiveModel}": ${err?.message || 'stream interrupted'}`;
+          if (!getAiClient()) {
+            writeEvent({ error: failureReason });
             endStream();
             return;
           }
-          // Otherwise fall through to Gemini Cloud if configured, or report error below
+          // Otherwise fall through to Gemini Cloud if configured
         }
       }
 

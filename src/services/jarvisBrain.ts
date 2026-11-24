@@ -860,6 +860,28 @@ export async function* streamJarvisResponse(
       }
     }
 
+    if (sseBuffer.trim()) {
+      for (const line of sseBuffer.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.error) {
+            yield { type: 'error', message: String(parsed.error) };
+            return;
+          }
+          if (typeof parsed.text === 'string' && parsed.text.length > 0) {
+            accumulated += parsed.text;
+            yield { type: 'text', content: accumulated };
+          }
+        } catch {
+          // ignore trailing partial frame
+        }
+      }
+    }
+
     if (!accumulated.trim()) {
       yield {
         type: 'error',
