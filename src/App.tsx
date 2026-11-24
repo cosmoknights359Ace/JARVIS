@@ -151,6 +151,56 @@ export const App: React.FC = () => {
 
   const routerRef = useRef(new JarvisRouter());
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamPendingRef = useRef<{
+    sessionId: string;
+    messageId: string;
+    content: string;
+  } | null>(null);
+  const streamFlushTimerRef = useRef<number | null>(null);
+
+  const flushStreamBuffer = useCallback(() => {
+    if (streamFlushTimerRef.current !== null) {
+      window.clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = null;
+    }
+    const pending = streamPendingRef.current;
+    if (!pending) return;
+    streamPendingRef.current = null;
+
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === pending.sessionId
+          ? {
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === pending.messageId ? { ...m, content: pending.content } : m
+              )
+            }
+          : s
+      )
+    );
+  }, []);
+
+  const scheduleStreamFlush = useCallback(
+    (sessionId: string, messageId: string, content: string) => {
+      streamPendingRef.current = { sessionId, messageId, content };
+      if (streamFlushTimerRef.current === null) {
+        streamFlushTimerRef.current = window.setTimeout(() => {
+          streamFlushTimerRef.current = null;
+          flushStreamBuffer();
+        }, 65);
+      }
+    },
+    [flushStreamBuffer]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (streamFlushTimerRef.current !== null) {
+        window.clearTimeout(streamFlushTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     sfx.enabled = settings.sfxEnabled;
@@ -170,9 +220,15 @@ export const App: React.FC = () => {
     localStorage.setItem('jarvis_memory_v3', JSON.stringify(memory));
   }, [memory]);
 
+  // Defer localStorage serialization while actively streaming to prevent WebView2 GC/OOM spikes
   useEffect(() => {
-    localStorage.setItem('jarvis_sessions_v3', JSON.stringify(sessions));
-  }, [sessions]);
+    if (isStreaming) return;
+    try {
+      localStorage.setItem('jarvis_sessions_v3', JSON.stringify(sessions));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [sessions, isStreaming]);
 
   useEffect(() => {
     try {
@@ -233,8 +289,9 @@ export const App: React.FC = () => {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    flushStreamBuffer();
     setIsStreaming(false);
-  }, []);
+  }, [flushStreamBuffer]);
 
   const toggleVoice = useCallback(() => {
     sfx.playClick();
@@ -512,19 +569,9 @@ export const App: React.FC = () => {
           );
         } else if (evt.type === 'text') {
           finalContent = evt.content;
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === targetSessionId
-                ? {
-                    ...s,
-                    messages: s.messages.map((m) =>
-                      m.id === assistMsgId ? { ...m, content: evt.content } : m
-                    )
-                  }
-                : s
-            )
-          );
+          scheduleStreamFlush(targetSessionId, assistMsgId, evt.content);
         } else if (evt.type === 'stats') {
+          flushStreamBuffer();
           setStats((prev) => ({
             ...prev,
             activeProvider: evt.provider,
@@ -542,6 +589,7 @@ export const App: React.FC = () => {
                       m.id === assistMsgId
                         ? {
                             ...m,
+                            content: finalContent || m.content,
                             model: evt.model,
                             provider: evt.provider,
                             ttftMs: evt.ttftMs,
@@ -556,6 +604,7 @@ export const App: React.FC = () => {
           );
         } else if (evt.type === 'error') {
           hadError = true;
+          flushStreamBuffer();
           setSessions((prev) =>
             prev.map((s) =>
               s.id === targetSessionId
@@ -573,6 +622,9 @@ export const App: React.FC = () => {
         }
       }
 
+      // Final flush on stream completion in case final chunk arrived after the last throttled tick
+      flushStreamBuffer();
+
       if (
         settings.voiceEnabled &&
         finalContent &&
@@ -588,6 +640,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Inference error:', err);
     } finally {
+      flushStreamBuffer();
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
       }

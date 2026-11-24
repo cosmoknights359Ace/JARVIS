@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumeOllamaNdjson } from './ollamaStreamUtils';
+import {
+  consumeOllamaNdjson,
+  isHeavyOllamaModel,
+  resolveOllamaNumCtx,
+  pickWarmUpModel
+} from './ollamaStreamUtils';
 
 test('consumeOllamaNdjson buffers JSON lines split across TCP chunks', () => {
   const step1 = consumeOllamaNdjson('', '{"message":{"content":"def fix"},"done":false}\n{"message":{"con');
@@ -19,3 +24,34 @@ test('consumeOllamaNdjson surfaces Ollama error payloads immediately', () => {
   const step = consumeOllamaNdjson('', '{"error":"model requires more system memory"}\n');
   assert.deepEqual(step.events, [{ error: 'model requires more system memory' }]);
 });
+
+test('isHeavyOllamaModel and resolveOllamaNumCtx cap 7B/8B+ models to 2048 while keeping 4096 for 3B', () => {
+  assert.equal(isHeavyOllamaModel('qwen2.5:3b'), false);
+  assert.equal(isHeavyOllamaModel('llama3.2:1b'), false);
+  assert.equal(isHeavyOllamaModel('vai-doc:latest'), false);
+  assert.equal(isHeavyOllamaModel('qwen2.5-coder:7b'), true);
+  assert.equal(isHeavyOllamaModel('llama3.1:8b-instruct-q4_K_M'), true);
+  assert.equal(isHeavyOllamaModel('qwen2.5:14b'), true);
+
+  assert.equal(resolveOllamaNumCtx('qwen2.5:3b', 4096), 4096);
+  assert.equal(resolveOllamaNumCtx('vai-doc:latest', 8192), 8192);
+  assert.equal(resolveOllamaNumCtx('qwen2.5-coder:7b', 4096), 2048);
+  assert.equal(resolveOllamaNumCtx('llama3.1:8b', 8192), 2048);
+  assert.equal(resolveOllamaNumCtx('deepseek-r1:14b', 4096), 2048);
+});
+
+test('pickWarmUpModel picks default 3B model and avoids warming heavy 7B+ or vision models', () => {
+  assert.equal(
+    pickWarmUpModel(['qwen2.5-coder:7b', 'qwen2.5:3b', 'llama3.2-vision:latest']),
+    'qwen2.5:3b'
+  );
+  assert.equal(
+    pickWarmUpModel(['qwen2.5-coder:7b', 'llama3.2-vision:latest', 'nomic-embed-text:latest']),
+    null
+  );
+  assert.equal(
+    pickWarmUpModel(['qwen2.5-coder:7b', 'llama3.2:3b']),
+    'llama3.2:3b'
+  );
+});
+

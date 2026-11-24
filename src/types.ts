@@ -118,7 +118,8 @@ export type SlideLayoutType =
   | 'split_image'
   | 'two_column'
   | 'stat_highlight'
-  | 'table';
+  | 'table'
+  | 'key_takeaway';
 
 export interface SlideTableData {
   headers: string[];
@@ -143,6 +144,9 @@ export interface SlideItem {
   kicker: string;
   title: string;
   subtitle?: string;
+  leftTitle?: string;
+  rightTitle?: string;
+  takeaway?: string;
   bullets: string[];
   secondaryBullets?: string[];
   table?: SlideTableData;

@@ -18,7 +18,11 @@ import {
   exportDeckToPptx
 } from './server/slidesEngine.ts';
 import { resolveAvailableOllamaModel } from './server/localJsonUtils.ts';
-import { consumeOllamaNdjson } from './server/ollamaStreamUtils.ts';
+import {
+  consumeOllamaNdjson,
+  pickWarmUpModel,
+  resolveOllamaNumCtx
+} from './server/ollamaStreamUtils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,6 +112,46 @@ async function checkLocalOllamaServer(
   } catch {
     clearTimeout(timeout);
     return { reachable: false, models: [], latencyMs: Math.max(1, Date.now() - started) };
+  }
+}
+
+/**
+ * Silent, non-blocking background warm-up for local Ollama on server startup.
+ * Loads the default 3B model into memory (keep_alive: "30m", empty prompt) so
+ * the user's first chat message avoids a ~25-30s cold-start delay.
+ */
+async function warmUpLocalOllama(host = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434'): Promise<void> {
+  const cleanHost = (host || 'http://127.0.0.1:11434')
+    .replace(/\/+$/, '')
+    .replace('localhost', '127.0.0.1');
+
+  const status = await checkLocalOllamaServer(cleanHost);
+  if (!status.reachable) return;
+
+  const targetModel = pickWarmUpModel(status.models, 'qwen2.5:3b');
+  if (!targetModel) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    await fetch(`${cleanHost}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: targetModel,
+        prompt: '',
+        stream: false,
+        keep_alive: '30m',
+        options: {
+          num_ctx: resolveOllamaNumCtx(targetModel, 4096)
+        }
+      }),
+      signal: controller.signal
+    });
+  } catch {
+    // Non-blocking best-effort warm-up: ignore offline or busy errors silently
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -263,7 +307,7 @@ async function startServer() {
               keep_alive: `${keepAliveMinutes}m`,
               options: {
                 temperature: Number(temperature) || 0.7,
-                num_ctx: 4096,
+                num_ctx: resolveOllamaNumCtx(effectiveModel, 4096),
                 num_predict: Number(maxTokens) || 1024
               }
             }),
@@ -689,7 +733,7 @@ async function startServer() {
         audience = 'executive',
         themeId = 'obsidian-orange',
         contextNotes = '',
-        includeMemory = true,
+        includeMemory = false,
         memory = {},
         modelName = 'vai-doc:latest',
         ollamaHost = 'http://127.0.0.1:11434',
@@ -845,6 +889,7 @@ async function startServer() {
         bootAttribution.verified ? 'VERIFIED' : 'INTEGRITY WARNING (LICENSE/NOTICE modified)'
       }`
     );
+    void warmUpLocalOllama();
   });
 
   const gracefulShutdown = () => {

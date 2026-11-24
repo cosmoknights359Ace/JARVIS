@@ -24,7 +24,11 @@ import {
   XfillSlot
 } from '../types';
 import { sfx } from '../services/soundEffects';
-import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
+import {
+  buildStudioModelOptions,
+  DEFAULT_STUDIO_MODEL,
+  formatModelOptionLabel
+} from '../utils/modelOptions';
 import { saveBlobFile } from '../utils/fileDownload';
 
 interface XfillViewProps {
@@ -452,7 +456,7 @@ export const XfillView: React.FC<XfillViewProps> = ({
               >
                 {modelOptions.map((m) => (
                   <option key={m} value={m} className="bg-[#111115] text-zinc-100">
-                    {m}
+                    {formatModelOptionLabel(m)}
                   </option>
                 ))}
               </select>

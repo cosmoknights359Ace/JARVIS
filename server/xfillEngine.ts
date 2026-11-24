@@ -18,6 +18,21 @@ import {
   isMissingFieldAnswer,
   resolveAvailableOllamaModel
 } from './localJsonUtils.ts';
+import { resolveOllamaNumCtx } from './ollamaStreamUtils.ts';
+import {
+  PLACEHOLDER_REGEX,
+  SPECIFIC_FIELD_LABEL_REGEX,
+  buildContextSnippet,
+  cleanPlaceholderPrompt,
+  findPrecedingPrompt,
+  formatAppendAfterLabel,
+  hasFollowingEmptyAnswerLabel,
+  isBindablePromptText,
+  isBlankOrPlaceholderValue,
+  looksLikeQuestion,
+  matchEmptyGenericAnswerLabel,
+  matchInlineQuestionAndAnswerLabel
+} from './xfillParserUtils.ts';
 
 export type XfillFileType = 'docx' | 'xlsx' | 'pptx';
 export type XfillSlotKind = 'placeholder' | 'question' | 'blank_field' | 'table_cell';
@@ -44,6 +59,7 @@ interface DocxTarget {
   mode: 'replace_placeholder' | 'append_after_label' | 'replace_whole';
   placeholderToken?: string;
   labelPrefix?: string;
+  preserveLineBreakTail?: boolean;
 }
 
 interface PptxTarget {
@@ -53,6 +69,7 @@ interface PptxTarget {
   mode: 'replace_placeholder' | 'append_after_label' | 'replace_whole';
   placeholderToken?: string;
   labelPrefix?: string;
+  preserveLineBreakTail?: boolean;
 }
 
 interface XlsxTarget {
@@ -60,8 +77,9 @@ interface XlsxTarget {
   sheetName: string;
   row: number;
   col: number;
-  mode: 'replace_placeholder' | 'replace_whole';
+  mode: 'replace_placeholder' | 'append_after_label' | 'replace_whole';
   placeholderToken?: string;
+  labelPrefix?: string;
 }
 
 type InternalTarget = DocxTarget | PptxTarget | XlsxTarget;
@@ -76,6 +94,7 @@ interface CachedDocument {
   fileType: XfillFileType;
   buffer: Buffer;
   summary: string;
+  documentText: string;
   slots: InternalSlot[];
   createdAt: number;
 }
@@ -123,11 +142,19 @@ function unescapeXml(str: string): string {
 }
 
 function extractTextFromXmlFragment(xml: string, tagName: 'w:t' | 'a:t'): string {
-  const regex = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'g');
+  const brTag = tagName === 'w:t' ? 'w:br' : 'a:br';
+  const regex = new RegExp(
+    `<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>|<${brTag}(?:\\s[^>]*)?\\/>`,
+    'g'
+  );
   let out = '';
   let m: RegExpExecArray | null;
   while ((m = regex.exec(xml)) !== null) {
-    out += unescapeXml(m[1]);
+    if (m[1] !== undefined) {
+      out += unescapeXml(m[1]);
+    } else {
+      out += '\n';
+    }
   }
   return out;
 }
@@ -142,48 +169,13 @@ function findTagBlocks(xml: string, tagName: string): Array<{ start: number; end
   return results;
 }
 
-const PLACEHOLDER_REGEX =
-  /(\{\{[^{}]+\}\}|\[\[(?:[^\]]+)\]\]|\[(?:enter|fill|insert|your|tbd|blank|answer|name|date|title|company|email|role|summary|topic|value|description|notes?|response|details?|presenter|project)[^\]]*\]|_{3,}|<[^<>\s][^<>]{1,40}>)/i;
-
-const ANSWER_LABEL_REGEX =
-  /^((?:answer|ans|response|reply|solution|explanation|result|summary|notes?|name|full name|email|date|title|project|project name|role|department|company|organization|author|presenter|topic|badge id|employee id|id|objective|takeaway|status|owner|reviewer|phone|location)\s*[:\-])\s*(.*)$/i;
-
-const QUESTION_START_REGEX = /^(?:q\d*[\).:\-\s]+|question\s*\d*[\).:\-\s]+|\d+[\).]\s+)/i;
-
-function isBlankOrPlaceholderValue(text: string): boolean {
-  const t = text.trim();
-  if (!t) return true;
-  if (/^(?:_{2,}|-{3,}|\.{3,}|tbd|n\/a|pending|\?+|\[.*\]|\{\{.*\}\}|<.*>)$/i.test(t)) {
-    return true;
-  }
-  return false;
-}
-
-function looksLikeQuestion(text: string): boolean {
-  const t = text.trim();
-  if (t.length < 6) return false;
-  return t.endsWith('?') || QUESTION_START_REGEX.test(t);
-}
-
-function cleanPlaceholderPrompt(token: string, fullLine: string): string {
-  const stripped = token
-    .replace(/^\{\{|\}\}$/g, '')
-    .replace(/^\[\[|\]\]$/g, '')
-    .replace(/^\[|\]$/g, '')
-    .replace(/^<|>$/g, '')
-    .replace(/_/g, ' ')
-    .trim();
-  if (stripped && stripped.length >= 2 && !/^tbd$/i.test(stripped)) {
-    return `${stripped} (from: "${fullLine.slice(0, 120)}")`;
-  }
-  return fullLine.replace(token, '_____').trim();
-}
-
 // ============================================================================
 // 1. DOCX Inspection & Format-Preserving Patching
 // ============================================================================
 
-async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: InternalSlot[] }> {
+async function inspectDocx(
+  buffer: Buffer
+): Promise<{ summary: string; documentText: string; slots: InternalSlot[] }> {
   const zip = await JSZip.loadAsync(buffer);
   const docFile = zip.file('word/document.xml');
   if (!docFile) {
@@ -193,12 +185,20 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
   const xml = await docFile.async('string');
   const paragraphs = findTagBlocks(xml, 'w:p');
   const paraTexts = paragraphs.map((p) => extractTextFromXmlFragment(p.raw, 'w:t').trim());
+  const documentText = paraTexts.filter(Boolean).join('\n').slice(0, 6000);
 
   // Map each paragraph index to its containing table row/cell if inside a <w:tbl>
   const tables = findTagBlocks(xml, 'w:tbl');
   const paraTableMeta = new Map<
     number,
-    { tableNum: number; rowNum: number; colNum: number; rowCells: string[]; colHeader?: string }
+    {
+      tableNum: number;
+      rowNum: number;
+      colNum: number;
+      rowCells: string[];
+      prevRowCells?: string[];
+      colHeader?: string;
+    }
   >();
 
   tables.forEach((tbl, tIdx) => {
@@ -221,6 +221,7 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
               rowNum: rIdx + 1,
               colNum: cIdx + 1,
               rowCells: rowCellTexts[rIdx] || [],
+              prevRowCells: rIdx > 0 ? rowCellTexts[rIdx - 1] : undefined,
               colHeader: rIdx > 0 ? headerRow[cIdx] : undefined
             });
           }
@@ -246,9 +247,13 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
     if (usedParaIndices.has(i)) continue;
     const text = paraTexts[i];
     const tableInfo = paraTableMeta.get(i);
-    const prevText = i > 0 ? paraTexts[i - 1] : '';
     const nextText = i + 1 < paragraphs.length ? paraTexts[i + 1] : '';
-    const context = [prevText, text, nextText].filter(Boolean).join(' | ').slice(0, 260);
+    const isSameRegion = (idx: number) => {
+      const other = paraTableMeta.get(idx);
+      if (!tableInfo && !other) return true;
+      return Boolean(tableInfo && other && tableInfo.tableNum === other.tableNum);
+    };
+    const context = buildContextSnippet(paraTexts, [i]);
     const loc = tableInfo
       ? `Table ${tableInfo.tableNum} · Row ${tableInfo.rowNum}, Col ${tableInfo.colNum}`
       : `Paragraph ${i + 1}`;
@@ -261,19 +266,38 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
       const isAnswerHeader = /^(answer|response|value|output|solution|notes?|details?|status|result|fill)$/i.test(
         header.trim()
       );
+      const leftIsGenericAnswer = Boolean(matchEmptyGenericAnswerLabel(leftCell));
+      const prevRowSameCol = tableInfo.prevRowCells?.[tableInfo.colNum - 1] || '';
       const hasPromptSource = Boolean(leftCell && !isBlankOrPlaceholderValue(leftCell));
 
-      if ((hasPromptSource && tableInfo.rowNum > 1) || (isAnswerHeader && firstCell) || (hasPromptSource && tableInfo.rowCells.length === 2)) {
-        const prompt = isAnswerHeader && firstCell && firstCell !== leftCell
-          ? `${firstCell} — ${leftCell || header}`
-          : leftCell || `${firstCell} (${header})`;
+      if (
+        (hasPromptSource && tableInfo.rowNum > 1) ||
+        (isAnswerHeader && firstCell) ||
+        (hasPromptSource && tableInfo.rowCells.length === 2)
+      ) {
+        let prompt =
+          isAnswerHeader && firstCell && firstCell !== leftCell
+            ? `${firstCell} — ${leftCell || header}`
+            : leftCell || `${firstCell} (${header})`;
+
+        // Bind preceding row's question for Q:/A: two-column table layouts
+        if (leftIsGenericAnswer && isBindablePromptText(prevRowSameCol)) {
+          prompt = prevRowSameCol;
+        }
+
         usedParaIndices.add(i);
         pushSlot({
           location: loc,
-          kind: 'table_cell',
+          kind: leftIsGenericAnswer ? 'question' : 'table_cell',
           prompt: prompt.trim(),
           originalText: text || '(empty cell)',
-          context: tableInfo.rowCells.filter(Boolean).join(' | ').slice(0, 260),
+          context: [
+            ...(leftIsGenericAnswer && tableInfo.prevRowCells ? tableInfo.prevRowCells : []),
+            ...tableInfo.rowCells
+          ]
+            .filter(Boolean)
+            .join(' | ')
+            .slice(0, 360),
           target: {
             type: 'docx_para',
             partPath: 'word/document.xml',
@@ -287,7 +311,74 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
 
     if (!text) continue;
 
-    // B. Explicit placeholder token inside paragraph ({{...}}, [Enter ...], ____, <...>)
+    // B. Single paragraph with inline question + empty answer label ("Q1: ...?\nA:" or "What is X? A:")
+    const inlineQa = matchInlineQuestionAndAnswerLabel(text);
+    if (inlineQa) {
+      const hasXmlBreak = /<w:br(?:\s[^>]*)?\/>/i.test(paragraphs[i].raw);
+      usedParaIndices.add(i);
+      pushSlot({
+        location: loc,
+        kind: 'question',
+        prompt: inlineQa.question,
+        originalText: text,
+        context,
+        target: {
+          type: 'docx_para',
+          partPath: 'word/document.xml',
+          paraIndex: i,
+          mode: 'append_after_label',
+          labelPrefix: hasXmlBreak && inlineQa.multiline ? inlineQa.answerLabel : inlineQa.fullPrefix,
+          preserveLineBreakTail: hasXmlBreak && inlineQa.multiline
+        }
+      });
+      continue;
+    }
+
+    // C. Standalone empty generic answer label ("A:", "A1:", "Ans:", "Answer:", "A: _____")
+    const precedingPrompt = findPrecedingPrompt(paraTexts, i, {
+      maxEmptySkip: 2,
+      stopIndices: usedParaIndices,
+      isSameRegion
+    });
+    const genericAnswer = matchEmptyGenericAnswerLabel(text, Boolean(precedingPrompt));
+    const rightTableCell =
+      tableInfo && tableInfo.colNum < tableInfo.rowCells.length
+        ? tableInfo.rowCells[tableInfo.colNum]
+        : undefined;
+    const isTableLabelForEmptyRightCell = Boolean(
+      genericAnswer &&
+      tableInfo &&
+      !genericAnswer.remainder &&
+      rightTableCell !== undefined &&
+      isBlankOrPlaceholderValue(rightTableCell)
+    );
+    if (genericAnswer && !isTableLabelForEmptyRightCell) {
+      const effectivePrompt = precedingPrompt
+        ? precedingPrompt.text
+        : genericAnswer.labelPrefix.replace(/[:\-.\)]+$/, '').trim();
+      const boundContext = buildContextSnippet(
+        paraTexts,
+        precedingPrompt ? [precedingPrompt.index, i] : [i]
+      );
+      usedParaIndices.add(i);
+      pushSlot({
+        location: loc,
+        kind: 'question',
+        prompt: effectivePrompt,
+        originalText: text,
+        context: boundContext,
+        target: {
+          type: 'docx_para',
+          partPath: 'word/document.xml',
+          paraIndex: i,
+          mode: 'append_after_label',
+          labelPrefix: genericAnswer.labelPrefix
+        }
+      });
+      continue;
+    }
+
+    // D. Explicit placeholder token inside paragraph ({{...}}, [Enter ...], ____, <...>)
     const phMatch = text.match(PLACEHOLDER_REGEX);
     if (phMatch) {
       const token = phMatch[1];
@@ -309,20 +400,15 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
       continue;
     }
 
-    // C. Labelled blank field ("Name:", "Answer:", "Project Title: ____")
-    const labelMatch = text.match(ANSWER_LABEL_REGEX);
+    // E. Specific labelled blank field ("Name:", "Project Title:", "Key Takeaway:")
+    const labelMatch = text.match(SPECIFIC_FIELD_LABEL_REGEX);
     if (labelMatch && isBlankOrPlaceholderValue(labelMatch[2])) {
       const labelPrefix = labelMatch[1].trim();
-      const isGenericAnswerLabel = /^(answer|ans|response|reply|solution)\s*[:\-]$/i.test(labelPrefix);
-      const effectivePrompt =
-        isGenericAnswerLabel && prevText && looksLikeQuestion(prevText)
-          ? prevText
-          : labelPrefix.replace(/[:\-]+$/, '').trim();
       usedParaIndices.add(i);
       pushSlot({
         location: loc,
-        kind: isGenericAnswerLabel ? 'question' : 'blank_field',
-        prompt: effectivePrompt,
+        kind: 'blank_field',
+        prompt: labelPrefix.replace(/[:\-]+$/, '').trim(),
         originalText: text,
         context,
         target: {
@@ -336,17 +422,21 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
       continue;
     }
 
-    // D. Question paragraph followed by an empty answer paragraph (outside tables)
+    // F. Question paragraph followed by an empty answer paragraph (outside tables)
     if (!tableInfo && looksLikeQuestion(text) && i + 1 < paragraphs.length) {
       const nextTableInfo = paraTableMeta.get(i + 1);
-      if (!nextTableInfo && isBlankOrPlaceholderValue(nextText)) {
+      if (
+        !nextTableInfo &&
+        isBlankOrPlaceholderValue(nextText) &&
+        !hasFollowingEmptyAnswerLabel(paraTexts, i, { maxEmptySkip: 2, isSameRegion })
+      ) {
         usedParaIndices.add(i + 1);
         pushSlot({
           location: `Paragraph ${i + 2} (Answer to P${i + 1})`,
           kind: 'question',
           prompt: text,
           originalText: nextText || '(blank answer line)',
-          context,
+          context: buildContextSnippet(paraTexts, [i, i + 1]),
           target: {
             type: 'docx_para',
             partPath: 'word/document.xml',
@@ -361,6 +451,7 @@ async function inspectDocx(buffer: Buffer): Promise<{ summary: string; slots: In
 
   return {
     summary: `Word document · ${paragraphs.length} paragraphs · ${tables.length} ${tables.length === 1 ? 'table' : 'tables'} · ${slots.length} fillable ${slots.length === 1 ? 'field' : 'fields'} detected`,
+    documentText,
     slots
   };
 }
@@ -369,8 +460,25 @@ function patchParagraphXml(
   paraXml: string,
   textTag: 'w:t' | 'a:t',
   runTag: 'w:r' | 'a:r',
-  newText: string
+  newText: string,
+  preserveLineBreakTail = false
 ): string {
+  if (preserveLineBreakTail) {
+    const brTag = textTag === 'w:t' ? 'w:br' : 'a:br';
+    const brRegex = new RegExp(`<${brTag}(?:\\s[^>]*)?\\/>`, 'gi');
+    let lastMatch: RegExpExecArray | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = brRegex.exec(paraXml)) !== null) {
+      lastMatch = m;
+    }
+    if (lastMatch) {
+      const splitIdx = lastMatch.index + lastMatch[0].length;
+      const head = paraXml.slice(0, splitIdx);
+      const tail = paraXml.slice(splitIdx);
+      return head + patchParagraphXml(tail, textTag, runTag, newText, false);
+    }
+  }
+
   const escaped = escapeXml(newText);
   const tRegex = new RegExp(`<${textTag}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${textTag}>`, 'g');
   let replacedFirst = false;
@@ -408,7 +516,7 @@ async function exportDocx(doc: CachedDocument, answers: Record<string, string>):
   let xml = await docFile.async('string');
 
   const paragraphs = findTagBlocks(xml, 'w:p');
-  const patchesByPara = new Map<number, string>();
+  const patchesByPara = new Map<number, { text: string; preserveLineBreakTail: boolean }>();
 
   for (const slot of doc.slots) {
     if (slot.target.type !== 'docx_para') continue;
@@ -420,25 +528,34 @@ async function exportDocx(doc: CachedDocument, answers: Record<string, string>):
     if (!pBlock) continue;
 
     const currentText = patchesByPara.has(pIdx)
-      ? patchesByPara.get(pIdx)!
+      ? patchesByPara.get(pIdx)!.text
       : extractTextFromXmlFragment(pBlock.raw, 'w:t');
 
     let nextText = answer.trim();
     if (slot.target.mode === 'replace_placeholder' && slot.target.placeholderToken) {
       nextText = currentText.replace(slot.target.placeholderToken, answer.trim());
     } else if (slot.target.mode === 'append_after_label' && slot.target.labelPrefix) {
-      nextText = `${slot.target.labelPrefix} ${answer.trim()}`;
+      nextText = formatAppendAfterLabel(slot.target.labelPrefix, answer.trim());
     }
 
-    patchesByPara.set(pIdx, nextText);
+    patchesByPara.set(pIdx, {
+      text: nextText,
+      preserveLineBreakTail: Boolean(slot.target.preserveLineBreakTail)
+    });
   }
 
   // Apply replacements from end to start so character offsets stay exact
   const sortedIndices = Array.from(patchesByPara.keys()).sort((a, b) => b - a);
   for (const pIdx of sortedIndices) {
     const pBlock = paragraphs[pIdx];
-    const nextText = patchesByPara.get(pIdx)!;
-    const patchedPara = patchParagraphXml(pBlock.raw, 'w:t', 'w:r', nextText);
+    const patch = patchesByPara.get(pIdx)!;
+    const patchedPara = patchParagraphXml(
+      pBlock.raw,
+      'w:t',
+      'w:r',
+      patch.text,
+      patch.preserveLineBreakTail
+    );
     xml = xml.slice(0, pBlock.start) + patchedPara + xml.slice(pBlock.end);
   }
 
@@ -482,12 +599,15 @@ function getCellText(cell: ExcelJS.Cell): string {
   return '';
 }
 
-async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: InternalSlot[] }> {
+async function inspectXlsx(
+  buffer: Buffer
+): Promise<{ summary: string; documentText: string; slots: InternalSlot[] }> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as any);
 
   const slots: InternalSlot[] = [];
   const seenCoords = new Set<string>();
+  const docLines: string[] = [];
 
   const pushSlot = (slot: Omit<InternalSlot, 'id' | 'value' | 'source' | 'confidence'>) => {
     const t = slot.target as XlsxTarget;
@@ -508,6 +628,36 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
     const colCount = Math.min(sheet.columnCount, 30);
     if (rowCount === 0 || colCount === 0) return;
 
+    // Preload 1-based grid so vertical Q&A lookback/lookahead is deterministic
+    const grid: string[][] = Array.from({ length: rowCount + 1 }, () =>
+      Array.from({ length: colCount + 1 }, () => '')
+    );
+    const colHasContent: boolean[] = Array.from({ length: colCount + 1 }, () => false);
+
+    for (let r = 1; r <= rowCount; r++) {
+      const row = sheet.getRow(r);
+      const nonEmptyRow: string[] = [];
+      for (let c = 1; c <= colCount; c++) {
+        const txt = getCellText(row.getCell(c));
+        grid[r][c] = txt;
+        if (txt) {
+          colHasContent[c] = true;
+          nonEmptyRow.push(txt);
+        }
+      }
+      if (nonEmptyRow.length > 0 && docLines.length < 250) {
+        docLines.push(`${sheet.name} R${r}: ${nonEmptyRow.join(' | ')}`);
+      }
+    }
+
+    const getColumnLines = (col: number): string[] => {
+      const arr: string[] = [];
+      for (let r = 1; r <= rowCount; r++) {
+        arr.push(grid[r][col] || '');
+      }
+      return arr;
+    };
+
     // Identify header row and answer columns if present in first 3 rows
     let headerRowIdx = -1;
     const answerCols = new Set<number>();
@@ -516,7 +666,7 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
     for (let r = 1; r <= Math.min(3, rowCount); r++) {
       let foundAnswerHeader = false;
       for (let c = 1; c <= colCount; c++) {
-        const text = getCellText(sheet.getRow(r).getCell(c));
+        const text = grid[r][c];
         if (/^(answer|answers|response|responses|value|values|output|solution|notes?|details?|fill|result|summary|status)$/i.test(text)) {
           foundAnswerHeader = true;
           answerCols.add(c);
@@ -525,25 +675,118 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
       if (foundAnswerHeader) {
         headerRowIdx = r;
         for (let c = 1; c <= colCount; c++) {
-          headersByCol.set(c, getCellText(sheet.getRow(r).getCell(c)));
+          headersByCol.set(c, grid[r][c]);
         }
         break;
       }
     }
 
     for (let r = 1; r <= rowCount; r++) {
-      const row = sheet.getRow(r);
-      const rowValues: string[] = [];
-      for (let c = 1; c <= colCount; c++) {
-        rowValues[c] = getCellText(row.getCell(c));
-      }
+      const rowValues = grid[r];
 
       for (let c = 1; c <= colCount; c++) {
         const cellText = rowValues[c] || '';
         const addr = `${sheet.name}!${colNumberToLetters(c)}${r}`;
-        const rowContext = rowValues.filter(Boolean).join(' | ').slice(0, 260);
+        const rowContext = rowValues.filter(Boolean).join(' | ').slice(0, 320);
 
-        // A. Explicit placeholder inside a cell
+        // A. Single cell with inline question + empty answer label ("Q1: ...?\nA:" or "What is X? A:")
+        const inlineQa = r !== headerRowIdx ? matchInlineQuestionAndAnswerLabel(cellText) : null;
+        if (inlineQa) {
+          pushSlot({
+            location: addr,
+            kind: 'question',
+            prompt: inlineQa.question,
+            originalText: cellText,
+            context: rowContext,
+            target: {
+              type: 'xlsx_cell',
+              sheetName: sheet.name,
+              row: r,
+              col: c,
+              mode: 'append_after_label',
+              labelPrefix: inlineQa.fullPrefix
+            }
+          });
+          continue;
+        }
+
+        // B. Cell containing an empty generic answer label ("A:", "Ans:", "Answer:", "A: _____")
+        if (r !== headerRowIdx && cellText) {
+          const colLines = getColumnLines(c);
+          const sameColPrev = findPrecedingPrompt(colLines, r - 1, { maxEmptySkip: 2 });
+          const leftText = c > 1 ? rowValues[c - 1] || '' : '';
+          const hasBindableNeighbor = Boolean(
+            (leftText && isBindablePromptText(leftText)) || sameColPrev
+          );
+          const genericAnswer = matchEmptyGenericAnswerLabel(cellText, hasBindableNeighbor);
+
+          if (genericAnswer) {
+            const rightIsEmpty = c < colCount && isBlankOrPlaceholderValue(rowValues[c + 1] || '');
+            const useRightCell =
+              rightIsEmpty &&
+              !genericAnswer.remainder &&
+              colHasContent[c + 1] &&
+              !(leftText && isBindablePromptText(leftText));
+
+            if (useRightCell) {
+              const rightColLines = getColumnLines(c + 1);
+              const rightColPrev = findPrecedingPrompt(rightColLines, r - 1, { maxEmptySkip: 2 });
+              const boundPrompt =
+                rightColPrev?.text ||
+                sameColPrev?.text ||
+                genericAnswer.labelPrefix.replace(/[:\-.\)]+$/, '').trim();
+              const rightAddr = `${sheet.name}!${colNumberToLetters(c + 1)}${r}`;
+              const combinedCtx = [rightColPrev?.text || sameColPrev?.text, rowContext]
+                .filter(Boolean)
+                .join(' | ')
+                .slice(0, 360);
+
+              pushSlot({
+                location: rightAddr,
+                kind: 'question',
+                prompt: boundPrompt,
+                originalText: rowValues[c + 1] || '(empty cell)',
+                context: combinedCtx,
+                target: {
+                  type: 'xlsx_cell',
+                  sheetName: sheet.name,
+                  row: r,
+                  col: c + 1,
+                  mode: 'replace_whole'
+                }
+              });
+              continue;
+            }
+
+            const boundPrompt =
+              (leftText && isBindablePromptText(leftText) ? leftText : '') ||
+              sameColPrev?.text ||
+              genericAnswer.labelPrefix.replace(/[:\-.\)]+$/, '').trim();
+            const combinedCtx = [sameColPrev?.text, rowContext]
+              .filter(Boolean)
+              .join(' | ')
+              .slice(0, 360);
+
+            pushSlot({
+              location: addr,
+              kind: 'question',
+              prompt: boundPrompt,
+              originalText: cellText,
+              context: combinedCtx,
+              target: {
+                type: 'xlsx_cell',
+                sheetName: sheet.name,
+                row: r,
+                col: c,
+                mode: 'append_after_label',
+                labelPrefix: genericAnswer.labelPrefix
+              }
+            });
+            continue;
+          }
+        }
+
+        // C. Explicit placeholder inside a cell
         const phMatch = cellText.match(PLACEHOLDER_REGEX);
         if (phMatch && r !== headerRowIdx) {
           const leftLabel = c > 1 ? rowValues[c - 1] : '';
@@ -569,7 +812,7 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
           continue;
         }
 
-        // B. Empty cell in an identified Answer/Response/Value column
+        // D. Empty cell in an identified Answer/Response/Value column
         if (headerRowIdx > 0 && r > headerRowIdx && answerCols.has(c) && isBlankOrPlaceholderValue(cellText)) {
           const rowNonEmpty = rowValues
             .map((val, idx) => ({ val, idx, hdr: headersByCol.get(idx) || '' }))
@@ -598,7 +841,7 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
           }
         }
 
-        // C. Adjacent key-value or Q&A pair (e.g., Col A has question/label, Col B is empty)
+        // E. Adjacent key-value or Q&A pair (e.g., Col A has question/label, Col B is empty)
         if (
           r !== headerRowIdx &&
           c < colCount &&
@@ -607,6 +850,12 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
           (looksLikeQuestion(cellText) || cellText.endsWith(':')) &&
           isBlankOrPlaceholderValue(rowValues[c + 1] || '')
         ) {
+          // Do not claim an unused right-side cell when an explicit A:/Ans:/Answer: row follows below
+          const colLines = getColumnLines(c);
+          if (hasFollowingEmptyAnswerLabel(colLines, r - 1, { maxEmptySkip: 2 })) {
+            continue;
+          }
+
           const rightAddr = `${sheet.name}!${colNumberToLetters(c + 1)}${r}`;
           pushSlot({
             location: rightAddr,
@@ -629,6 +878,7 @@ async function inspectXlsx(buffer: Buffer): Promise<{ summary: string; slots: In
 
   return {
     summary: `Excel workbook · ${workbook.worksheets.length} ${workbook.worksheets.length === 1 ? 'sheet' : 'sheets'} · ${slots.length} fillable ${slots.length === 1 ? 'cell' : 'cells'} detected`,
+    documentText: docLines.join('\n').slice(0, 6000),
     slots
   };
 }
@@ -647,10 +897,12 @@ async function exportXlsx(doc: CachedDocument, answers: Record<string, string>):
 
     const cell = sheet.getRow(slot.target.row).getCell(slot.target.col);
     const current = getCellText(cell);
-    const finalText =
-      slot.target.mode === 'replace_placeholder' && slot.target.placeholderToken
-        ? current.replace(slot.target.placeholderToken, answer.trim())
-        : answer.trim();
+    let finalText = answer.trim();
+    if (slot.target.mode === 'replace_placeholder' && slot.target.placeholderToken) {
+      finalText = current.replace(slot.target.placeholderToken, answer.trim());
+    } else if (slot.target.mode === 'append_after_label' && slot.target.labelPrefix) {
+      finalText = formatAppendAfterLabel(slot.target.labelPrefix, answer.trim());
+    }
 
     cell.value = finalText;
     cell.alignment = {
@@ -668,7 +920,9 @@ async function exportXlsx(doc: CachedDocument, answers: Record<string, string>):
 // 3. PPTX Inspection & Slide XML Patching
 // ============================================================================
 
-async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: InternalSlot[] }> {
+async function inspectPptx(
+  buffer: Buffer
+): Promise<{ summary: string; documentText: string; slots: InternalSlot[] }> {
   const zip = await JSZip.loadAsync(buffer);
   const slidePaths = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
@@ -683,6 +937,7 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
   }
 
   const slots: InternalSlot[] = [];
+  const docSlideTexts: string[] = [];
 
   for (let sIdx = 0; sIdx < slidePaths.length; sIdx++) {
     const slidePath = slidePaths[sIdx];
@@ -690,7 +945,11 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
     const xml = await zip.file(slidePath)!.async('string');
     const paragraphs = findTagBlocks(xml, 'a:p');
     const paraTexts = paragraphs.map((p) => extractTextFromXmlFragment(p.raw, 'a:t').trim());
-    const slideContext = paraTexts.filter(Boolean).slice(0, 6).join(' | ').slice(0, 260);
+    const nonEmptySlideLines = paraTexts.filter(Boolean);
+    if (nonEmptySlideLines.length > 0) {
+      docSlideTexts.push(`Slide ${slideNum}: ${nonEmptySlideLines.join(' | ')}`);
+    }
+    const slideContext = nonEmptySlideLines.slice(0, 6).join(' | ').slice(0, 320);
     const used = new Set<number>();
 
     const pushSlot = (slot: Omit<InternalSlot, 'id' | 'value' | 'source' | 'confidence'>) => {
@@ -711,7 +970,60 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
       const loc = `Slide ${slideNum} · Line ${i + 1}`;
       const nextText = i + 1 < paragraphs.length ? paraTexts[i + 1] : '';
 
-      // A. Explicit placeholder or "Click to add ..."
+      // A. Single slide paragraph with inline question + empty answer label ("Q1: ...?\nA:" or "What is X? A:")
+      const inlineQa = matchInlineQuestionAndAnswerLabel(text);
+      if (inlineQa) {
+        const hasXmlBreak = /<a:br(?:\s[^>]*)?\/>/i.test(paragraphs[i].raw);
+        used.add(i);
+        pushSlot({
+          location: loc,
+          kind: 'question',
+          prompt: inlineQa.question,
+          originalText: text,
+          context: slideContext,
+          target: {
+            type: 'pptx_para',
+            slidePath,
+            paraIndex: i,
+            mode: 'append_after_label',
+            labelPrefix: hasXmlBreak && inlineQa.multiline ? inlineQa.answerLabel : inlineQa.fullPrefix,
+            preserveLineBreakTail: hasXmlBreak && inlineQa.multiline
+          }
+        });
+        continue;
+      }
+
+      // B. Standalone empty generic answer label ("A:", "A1:", "Ans:", "Answer:", "A: _____")
+      const precedingPrompt = findPrecedingPrompt(paraTexts, i, {
+        maxEmptySkip: 2,
+        stopIndices: used
+      });
+      const genericAnswer = matchEmptyGenericAnswerLabel(text, Boolean(precedingPrompt));
+      if (genericAnswer) {
+        used.add(i);
+        pushSlot({
+          location: loc,
+          kind: 'question',
+          prompt: precedingPrompt
+            ? precedingPrompt.text
+            : genericAnswer.labelPrefix.replace(/[:\-.\)]+$/, '').trim(),
+          originalText: text,
+          context: buildContextSnippet(
+            paraTexts,
+            precedingPrompt ? [precedingPrompt.index, i] : [i]
+          ),
+          target: {
+            type: 'pptx_para',
+            slidePath,
+            paraIndex: i,
+            mode: 'append_after_label',
+            labelPrefix: genericAnswer.labelPrefix
+          }
+        });
+        continue;
+      }
+
+      // C. Explicit placeholder or "Click to add ..."
       const phMatch = text.match(PLACEHOLDER_REGEX);
       if (phMatch || /^click to add\b/i.test(text)) {
         used.add(i);
@@ -733,20 +1045,15 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
         continue;
       }
 
-      // B. Labelled blank ("Key Takeaway:", "Answer:", "Presenter: ____")
-      const labelMatch = text.match(ANSWER_LABEL_REGEX);
+      // D. Specific labelled blank ("Key Takeaway:", "Presenter: ____")
+      const labelMatch = text.match(SPECIFIC_FIELD_LABEL_REGEX);
       if (labelMatch && isBlankOrPlaceholderValue(labelMatch[2])) {
         const labelPrefix = labelMatch[1].trim();
-        const prevText = i > 0 ? paraTexts[i - 1] : '';
-        const isGenericAnswer = /^(answer|ans|response|solution)\s*[:\-]$/i.test(labelPrefix);
         used.add(i);
         pushSlot({
           location: loc,
-          kind: isGenericAnswer ? 'question' : 'blank_field',
-          prompt:
-            isGenericAnswer && prevText && looksLikeQuestion(prevText)
-              ? prevText
-              : labelPrefix.replace(/[:\-]+$/, '').trim(),
+          kind: 'blank_field',
+          prompt: labelPrefix.replace(/[:\-]+$/, '').trim(),
           originalText: text,
           context: slideContext,
           target: {
@@ -760,15 +1067,20 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
         continue;
       }
 
-      // C. Question line followed by empty/placeholder line
-      if (looksLikeQuestion(text) && i + 1 < paragraphs.length && isBlankOrPlaceholderValue(nextText)) {
+      // E. Question line followed by empty/placeholder line (unless followed by explicit A:/Ans:/Answer:)
+      if (
+        looksLikeQuestion(text) &&
+        i + 1 < paragraphs.length &&
+        isBlankOrPlaceholderValue(nextText) &&
+        !hasFollowingEmptyAnswerLabel(paraTexts, i, { maxEmptySkip: 2 })
+      ) {
         used.add(i + 1);
         pushSlot({
           location: `Slide ${slideNum} · Line ${i + 2}`,
           kind: 'question',
           prompt: text,
           originalText: nextText || '(blank slide line)',
-          context: slideContext,
+          context: buildContextSnippet(paraTexts, [i, i + 1]),
           target: {
             type: 'pptx_para',
             slidePath,
@@ -782,6 +1094,7 @@ async function inspectPptx(buffer: Buffer): Promise<{ summary: string; slots: In
 
   return {
     summary: `PowerPoint deck · ${slidePaths.length} ${slidePaths.length === 1 ? 'slide' : 'slides'} · ${slots.length} fillable ${slots.length === 1 ? 'field' : 'fields'} detected`,
+    documentText: docSlideTexts.join('\n').slice(0, 6000),
     slots
   };
 }
@@ -804,29 +1117,39 @@ async function exportPptx(doc: CachedDocument, answers: Record<string, string>):
     if (!slideFile) continue;
     let xml = await slideFile.async('string');
     const paragraphs = findTagBlocks(xml, 'a:p');
-    const patches = new Map<number, string>();
+    const patches = new Map<number, { text: string; preserveLineBreakTail: boolean }>();
 
     for (const { slot, answer } of items) {
       const t = slot.target as PptxTarget;
       const pBlock = paragraphs[t.paraIndex];
       if (!pBlock) continue;
       const current = patches.has(t.paraIndex)
-        ? patches.get(t.paraIndex)!
+        ? patches.get(t.paraIndex)!.text
         : extractTextFromXmlFragment(pBlock.raw, 'a:t');
 
       let next = answer;
       if (t.mode === 'replace_placeholder' && t.placeholderToken) {
         next = current.replace(t.placeholderToken, answer);
       } else if (t.mode === 'append_after_label' && t.labelPrefix) {
-        next = `${t.labelPrefix} ${answer}`;
+        next = formatAppendAfterLabel(t.labelPrefix, answer);
       }
-      patches.set(t.paraIndex, next);
+      patches.set(t.paraIndex, {
+        text: next,
+        preserveLineBreakTail: Boolean(t.preserveLineBreakTail)
+      });
     }
 
     const sorted = Array.from(patches.keys()).sort((a, b) => b - a);
     for (const idx of sorted) {
       const pBlock = paragraphs[idx];
-      const patched = patchParagraphXml(pBlock.raw, 'a:t', 'a:r', patches.get(idx)!);
+      const patch = patches.get(idx)!;
+      const patched = patchParagraphXml(
+        pBlock.raw,
+        'a:t',
+        'a:r',
+        patch.text,
+        patch.preserveLineBreakTail
+      );
       xml = xml.slice(0, pBlock.start) + patched + xml.slice(pBlock.end);
     }
 
@@ -865,7 +1188,7 @@ export async function inspectAndCacheDocument(
     throw new Error('Unsupported file format. Please upload a .docx, .xlsx, or .pptx file.');
   }
 
-  let parsed: { summary: string; slots: InternalSlot[] };
+  let parsed: { summary: string; documentText: string; slots: InternalSlot[] };
   if (fileType === 'docx') {
     parsed = await inspectDocx(buffer);
   } else if (fileType === 'xlsx') {
@@ -881,6 +1204,7 @@ export async function inspectAndCacheDocument(
     fileType,
     buffer,
     summary: parsed.summary,
+    documentText: parsed.documentText,
     slots: parsed.slots,
     createdAt: Date.now()
   };
@@ -1137,13 +1461,14 @@ function cleanAnswerText(raw: string): string {
   return String(raw || '')
     .replace(/^```(?:\w+)?\n?/i, '')
     .replace(/```$/i, '')
-    .replace(/^(?:here is the answer|answer|response)\s*:\s*/i, '')
+    .replace(/^(?:here is the answer|answer|ans\.?|response)\s*[:\-]\s*/i, '')
     .trim();
 }
 
-function buildGroundedPrompt(
-  slots: InternalSlot[],
-  opts: SolveRequestOptions
+export function buildGroundedPrompt(
+  slots: Array<Pick<XfillSlotPublic, 'id' | 'location' | 'kind' | 'prompt' | 'context'>>,
+  opts: SolveRequestOptions,
+  documentText = ''
 ): { system: string; user: string } {
   const styleRule =
     opts.answerStyle === 'bullets'
@@ -1153,19 +1478,20 @@ function buildGroundedPrompt(
       : 'Keep every answer crisp, direct, and to the point (1-2 concise sentences or exact value).';
 
   const groundingRule = opts.strictGrounding
-    ? 'STRICT GROUNDING MODE IS ON: You may ONLY use facts explicitly found in MEMORY_BANK or CONTEXT_NOTES. If a field cannot be answered strictly from those two sources, you MUST output "[NEEDS INPUT]" with source="missing" and confidence="needs_input".'
-    : 'GROUNDING PRIORITY: (1) Always check MEMORY_BANK first. (2) Check CONTEXT_NOTES second. (3) For objective factual, academic, technical, or conceptual questions, answer accurately using verified knowledge (source="knowledge"). (4) CRITICAL ANTI-HALLUCINATION RULE: NEVER invent private personal, organizational, financial, or identity data (such as phone numbers, emails, badge/employee IDs, addresses, passwords, private dates, or internal metrics) not present in MEMORY_BANK or CONTEXT_NOTES — for those, ALWAYS output exact text "[NEEDS INPUT]", source="missing", confidence="needs_input".';
+    ? 'STRICT GROUNDING MODE IS ON: You may ONLY use facts explicitly found in DOCUMENT_CONTENT, MEMORY_BANK, or CONTEXT_NOTES. Use source="context" for facts from DOCUMENT_CONTENT or CONTEXT_NOTES and source="memory" for facts from MEMORY_BANK. If a field cannot be answered strictly from those sources, you MUST output "[NEEDS INPUT]" with source="missing" and confidence="needs_input".'
+    : 'GROUNDING PRIORITY: (1) Always check DOCUMENT_CONTENT first when the document itself contains background passages, facts, or policy details (use source="context"). (2) Check MEMORY_BANK (source="memory") and CONTEXT_NOTES (source="context"). (3) For objective factual, academic, technical, or conceptual questions not answered in the document, answer accurately using verified knowledge (source="knowledge"). (4) CRITICAL ANTI-HALLUCINATION RULE: NEVER invent private personal, organizational, financial, or identity data (such as phone numbers, emails, badge/employee IDs, addresses, passwords, private dates, or internal metrics) not present in DOCUMENT_CONTENT, MEMORY_BANK, or CONTEXT_NOTES — for those, ALWAYS output exact text "[NEEDS INPUT]", source="missing", confidence="needs_input".';
 
   const system = `You are J.A.R.V.I.S Xfill, a precision document auto-fill engine.
 Rules:
 1. ${groundingRule}
 2. ${styleRule}
-3. Never add conversational filler ("Sure!", "Here is...", "As an AI..."). Output ONLY the exact text to place inside the document field.
+3. Never add conversational filler ("Sure!", "Here is...", "As an AI...") or repeat the field prefix ("A:", "Ans:", "Answer:"). Output ONLY the exact answer text to place inside the document field.
 4. Preserve every exact slot id provided. Do not omit or invent ids.
 5. Return ONLY valid JSON matching: { "answers": [ { "id": string, "answer": string, "source": "memory"|"context"|"knowledge"|"missing", "confidence": "high"|"medium"|"needs_input", "reasoning": string } ] }.`;
 
   const memLines = Object.entries(opts.memory || {}).map(([k, v]) => `- ${k}: ${v}`);
   const userPayload = {
+    DOCUMENT_CONTENT: documentText?.trim() || '(no additional document body text)',
     MEMORY_BANK: memLines.length > 0 ? memLines : ['(empty)'],
     CONTEXT_NOTES: opts.contextNotes?.trim() || '(none provided)',
     CUSTOM_INSTRUCTIONS: opts.customInstructions?.trim() || '(none)',
@@ -1243,7 +1569,8 @@ function normalizeSolvedItems(
 
 async function solveBatchWithOllama(
   batchSlots: InternalSlot[],
-  opts: SolveRequestOptions
+  opts: SolveRequestOptions,
+  documentText: string
 ): Promise<{ results: SolvedSlotResult[]; modelUsed: string } | null> {
   const cleanHost = (opts.ollamaHost || 'http://127.0.0.1:11434')
     .replace(/\/+$/, '')
@@ -1276,7 +1603,7 @@ async function solveBatchWithOllama(
   );
 
   // 2. Local Ollama is live — allow generous 120s timeout for thorough local inference
-  const { system, user } = buildGroundedPrompt(batchSlots, opts);
+  const { system, user } = buildGroundedPrompt(batchSlots, opts, documentText);
   const chatCtrl = new AbortController();
   const chatTimer = setTimeout(() => chatCtrl.abort(), 120000);
 
@@ -1292,7 +1619,7 @@ async function solveBatchWithOllama(
         keep_alive: `${opts.keepAliveMinutes || 30}m`,
         options: {
           temperature: 0.1,
-          num_ctx: DEFAULT_STUDIO_NUM_CTX,
+          num_ctx: resolveOllamaNumCtx(effectiveModel, DEFAULT_STUDIO_NUM_CTX),
           num_predict: 2048
         },
         messages: [
@@ -1329,9 +1656,10 @@ async function solveBatchWithOllama(
 async function solveBatchWithGemini(
   ai: GoogleGenAI,
   batchSlots: InternalSlot[],
-  opts: SolveRequestOptions
+  opts: SolveRequestOptions,
+  documentText: string
 ): Promise<SolvedSlotResult[]> {
-  const { system, user } = buildGroundedPrompt(batchSlots, opts);
+  const { system, user } = buildGroundedPrompt(batchSlots, opts, documentText);
 
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
@@ -1401,7 +1729,7 @@ export async function solveDocumentSlots(
     const batch = targetSlots.slice(i, i + BATCH_SIZE);
 
     // 1. Local Ollama first (fast, low-temp T=0.1, JSON formatted, vai-doc:latest default)
-    const ollamaBatch = await solveBatchWithOllama(batch, opts);
+    const ollamaBatch = await solveBatchWithOllama(batch, opts, doc.documentText);
     if (ollamaBatch) {
       usedModel = ollamaBatch.modelUsed;
       allResults.push(...ollamaBatch.results);
@@ -1417,7 +1745,7 @@ export async function solveDocumentSlots(
 
     usedProvider = 'gemini';
     usedModel = GEMINI_MODEL;
-    const geminiBatch = await solveBatchWithGemini(aiClient, batch, opts);
+    const geminiBatch = await solveBatchWithGemini(aiClient, batch, opts, doc.documentText);
     allResults.push(...geminiBatch);
   }
 

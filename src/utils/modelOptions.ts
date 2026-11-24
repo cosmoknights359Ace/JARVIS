@@ -33,3 +33,33 @@ export function buildStudioModelOptions(params: {
 
   return result;
 }
+
+const MODEL_PARAM_SIZE_REGEX = /(?:^|[:\-_.\s])(\d+(?:\.\d+)?)b(?=$|[:\-_.\s])/i;
+
+/**
+ * Returns true when an Ollama model tag specifies >= 7B parameters
+ * (e.g., qwen2.5-coder:7b, llama3.1:8b, qwen2.5:14b) so UI dropdowns can
+ * label them as "Heavy" on 4 GB VRAM systems.
+ */
+export function isHeavyModelName(modelName: string): boolean {
+  if (typeof modelName !== 'string' || !modelName.trim()) return false;
+  const match = modelName.trim().match(MODEL_PARAM_SIZE_REGEX);
+  if (!match) return false;
+  const billions = parseFloat(match[1]);
+  return Number.isFinite(billions) && billions >= 7;
+}
+
+/**
+ * Formats a model identifier for <select> option labels, appending a subtle
+ * "(Heavy)" indicator for 7B+ models.
+ */
+export function formatModelOptionLabel(modelName: string, resolvedForAuto?: string): string {
+  const clean = (modelName || '').trim();
+  if (!clean) return '';
+  if (clean === 'auto') {
+    if (!resolvedForAuto) return 'auto';
+    return `auto (${formatModelOptionLabel(resolvedForAuto)})`;
+  }
+  return isHeavyModelName(clean) ? `${clean} (Heavy)` : clean;
+}
+

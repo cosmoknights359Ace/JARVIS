@@ -27,11 +27,13 @@ import {
   resolveAvailableOllamaModel
 } from './localJsonUtils.ts';
 import {
+  isGenericNumberedTitle,
   normalizeSlideItem,
   resolveTargetSlideCount,
   sanitizeSlideText,
   validateDeckJson
 } from './slidesUtils.ts';
+import { resolveOllamaNumCtx } from './ollamaStreamUtils.ts';
 
 const PptxGenJS: any = (PptxGenJSModule as any).default || PptxGenJSModule;
 
@@ -141,25 +143,33 @@ function buildDeckPrompt(
   const system = `You are J.A.R.V.I.S Slides, a precision presentation architect.
 Strict Rules:
 1. EXACT SLIDE COUNT: Output EXACTLY ${targetCount} slides in the "slides" array—no more, no fewer. Do NOT append extra "Benchmark" or "Summary" slides beyond ${targetCount}.
-2. AUDIENCE & TECHNICAL DEPTH: ${audienceStyle[req.audience] || audienceStyle.executive} For technical topics, include exact definitions, formulas, complexity bounds (e.g. Big-O), and concrete trade-offs rather than vague summaries.
-3. ANTI-REPETITION: Never repeat the same fact, metric, or bullet point across different slides. Every slide must cover a distinct angle or subtopic.
-4. GROUNDING & ZERO PLACEHOLDERS: Prioritize facts from CONTEXT_NOTES and MEMORY_BANK when provided. Never fabricate fake revenue, citations, or statistics. Never write generic placeholder text like "Core insights on..." or "Walk the audience through...".
-5. SLIDE LAYOUTS & TABLES:
+2. DESCRIPTIVE TITLES & SHORT KICKERS:
+   - Every slide's "title" MUST be a real, descriptive heading (3-7 words) capturing that slide's core takeaway. NEVER output generic numbered titles like "Slide 1", "Slide 2", "Slide 3", or "Page 2".
+   - Restrict "kicker" (eyebrow) to a short 1-3 word section tag (e.g., "Architecture", "Trade-Offs", "Key Metrics")—NEVER put the main slide title or a full sentence in "kicker".
+3. AUDIENCE & TECHNICAL DEPTH: ${audienceStyle[req.audience] || audienceStyle.executive} For technical topics, include exact definitions, formulas, complexity bounds (e.g. Big-O), and concrete trade-offs rather than vague summaries.
+4. ANTI-REPETITION: Never repeat the same fact, metric, or bullet point across different slides. Every slide must cover a distinct angle or subtopic.
+5. GROUNDING & ZERO PLACEHOLDERS: Prioritize facts from CONTEXT_NOTES and MEMORY_BANK when provided. Never fabricate fake revenue, citations, or statistics. Never write generic placeholder text like "Core insights on..." or "Walk the audience through...".
+6. SLIDE LAYOUTS & VARIETY:
    - Slide 1 MUST use "layout": "title" with a compelling "title" and "subtitle".
-   - Use "layout": "table" with "headers": [string, ...] (2-5 columns) and "rows": [[string, ...], ...] (2-6 rows) whenever comparing concepts, architectures, metrics, or trade-offs${wantsTable ? ' (REQUIRED: include at least one "table" slide for this prompt)' : ''}.
-   - Use "bullets", "split_image", "two_column", or "stat_highlight" for remaining slides.
+   - Use "layout": "table" with "headers": [string, ...] (2-5 columns) and "rows": [[string, ...], ...] (2-6 rows) whenever comparing multi-attribute metrics or benchmarks${wantsTable ? ' (REQUIRED: include at least one "table" slide for this prompt)' : ''}.
+   - Use "layout": "two_column" for side-by-side comparisons (e.g., Pros vs. Cons, Approach A vs. B, Before vs. After) with concise "leftTitle", "bullets" (left side), "rightTitle", and "secondaryBullets" (right side).
+   - Use "layout": "key_takeaway" for the final/closing synthesis slide (or major milestone wrap-up) with a bold 1-2 sentence "takeaway" callout statement plus 2-3 crisp closing action items in "bullets".
+   - Use "bullets", "split_image", or "stat_highlight" for remaining slides so consecutive slides vary visually.
    - Keep bullets concise and information-dense (3-5 bullets per slide, max 18 words each).
-6. SPEAKER NOTES: Every single slide MUST include a non-empty "speaker_notes" string (2-3 concrete presenter sentences adding context beyond reading the bullets verbatim) and a clean 2-5 word English "imageQuery" for Wikimedia Commons.
-7. STRICT JSON: Output ONLY valid JSON with properly escaped quotes (\\") inside strings and zero trailing commas, matching:
+7. SPEAKER NOTES: Every single slide MUST include a non-empty "speaker_notes" string written as 2-3 natural, properly punctuated spoken sentences that add context for a presenter—NEVER mash raw bullet points together and NEVER start with a "Slide 1:" / "Slide 2:" prefix. Also include a clean 2-5 word English "imageQuery" for Wikimedia Commons.
+8. STRICT JSON: Output ONLY valid JSON with properly escaped quotes (\\") inside strings and zero trailing commas, matching:
 {
   "title": string,
   "subtitle": string,
   "slides": [
     {
-      "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table",
+      "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table" | "key_takeaway",
       "kicker": string,
       "title": string,
       "subtitle": string,
+      "leftTitle": string,
+      "rightTitle": string,
+      "takeaway": string,
       "bullets": string[],
       "secondaryBullets": string[],
       "headers": string[],
@@ -246,7 +256,7 @@ async function callOllamaJson(
         keep_alive: `${keepAliveMinutes || 30}m`,
         options: {
           temperature: 0.2,
-          num_ctx: DEFAULT_STUDIO_NUM_CTX,
+          num_ctx: resolveOllamaNumCtx(effectiveModel, DEFAULT_STUDIO_NUM_CTX),
           num_predict: 3500
         },
         messages: [
@@ -336,9 +346,18 @@ export async function generateSlideDeck(
           type: Type.OBJECT,
           properties: {
             layout: { type: Type.STRING },
-            kicker: { type: Type.STRING },
-            title: { type: Type.STRING },
+            kicker: {
+              type: Type.STRING,
+              description: 'Short 1-3 word section tag only; never the main slide title.'
+            },
+            title: {
+              type: Type.STRING,
+              description: 'Descriptive 3-7 word slide heading; never generic numbered titles like "Slide 2".'
+            },
             subtitle: { type: Type.STRING },
+            leftTitle: { type: Type.STRING },
+            rightTitle: { type: Type.STRING },
+            takeaway: { type: Type.STRING },
             bullets: {
               type: Type.ARRAY,
               items: { type: Type.STRING }
@@ -365,7 +384,10 @@ export async function generateSlideDeck(
                 label: { type: Type.STRING }
               }
             },
-            speaker_notes: { type: Type.STRING },
+            speaker_notes: {
+              type: Type.STRING,
+              description: '2-3 natural, properly punctuated spoken sentences for the presenter without any "Slide N:" prefix or concatenated raw bullets.'
+            },
             imageQuery: { type: Type.STRING }
           },
           required: ['layout', 'title', 'speaker_notes', 'imageQuery']
@@ -461,7 +483,11 @@ export async function generateSlideDeck(
     .map((s, idx) => normalizeSlideItem(s, idx, topic));
 
   const now = new Date().toISOString();
-  const deckTitle = sanitizeSlideText(parsed?.title, 120) || normalizedSlides[0]?.title || topic;
+  const rawDeckTitle = sanitizeSlideText(parsed?.title, 120);
+  const deckTitle =
+    rawDeckTitle && !isGenericNumberedTitle(rawDeckTitle)
+      ? rawDeckTitle
+      : normalizedSlides[0]?.title || topic;
   const deckSubtitle =
     sanitizeSlideText(parsed?.subtitle, 180) || normalizedSlides[0]?.subtitle || '';
 
@@ -502,15 +528,20 @@ export async function regenerateSingleSlide(
   aiClient: GoogleGenAI | null
 ): Promise<{ slide: SlideItem; provider: 'ollama' | 'gemini'; model: string }> {
   const system = `You are J.A.R.V.I.S Slides. Rewrite and improve ONE presentation slide accurately without hallucinations or filler.
+- "title" MUST be a real, descriptive 3-7 word heading—never generic numbered titles like "Slide 2" or "Page 3".
+- Keep "kicker" to a short 1-3 word section tag, never the main slide title.
 - For technical topics, include exact definitions, formulas, complexity bounds, and concrete trade-offs.
-- Support "table" layout with "headers" and "rows" when comparing concepts/metrics.
-- Keep bullets concise (3-5 bullets, max 18 words each), provide concrete presenter "speaker_notes" (2-3 sentences), and output a clean 2-5 word English "imageQuery" for Wikimedia Commons.
+- Support "table" layout with "headers" and "rows" when comparing concepts/metrics, "two_column" with "leftTitle"/"rightTitle" for side-by-side comparisons, and "key_takeaway" with a prominent "takeaway" callout for summary/closing slides.
+- Keep bullets concise (3-5 bullets, max 18 words each), write "speaker_notes" as 2-3 natural, properly punctuated spoken sentences (never concatenated raw bullets or a "Slide N:" prefix), and output a clean 2-5 word English "imageQuery" for Wikimedia Commons.
 Return ONLY valid JSON:
 {
-  "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table",
+  "layout": "title" | "bullets" | "split_image" | "two_column" | "stat_highlight" | "table" | "key_takeaway",
   "kicker": string,
   "title": string,
   "subtitle": string,
+  "leftTitle": string,
+  "rightTitle": string,
+  "takeaway": string,
   "bullets": string[],
   "secondaryBullets": string[],
   "headers": string[],
@@ -531,6 +562,9 @@ Return ONLY valid JSON:
         kicker: params.slide.kicker,
         title: params.slide.title,
         subtitle: params.slide.subtitle || '',
+        leftTitle: params.slide.leftTitle || '',
+        rightTitle: params.slide.rightTitle || '',
+        takeaway: params.slide.takeaway || '',
         bullets: params.slide.bullets,
         secondaryBullets: params.slide.secondaryBullets || [],
         headers: params.slide.table?.headers || [],
@@ -566,9 +600,18 @@ Return ONLY valid JSON:
       type: Type.OBJECT,
       properties: {
         layout: { type: Type.STRING },
-        kicker: { type: Type.STRING },
-        title: { type: Type.STRING },
+        kicker: {
+          type: Type.STRING,
+          description: 'Short 1-3 word section tag only; never the main slide title.'
+        },
+        title: {
+          type: Type.STRING,
+          description: 'Descriptive 3-7 word slide heading; never generic numbered titles like "Slide 2".'
+        },
         subtitle: { type: Type.STRING },
+        leftTitle: { type: Type.STRING },
+        rightTitle: { type: Type.STRING },
+        takeaway: { type: Type.STRING },
         bullets: { type: Type.ARRAY, items: { type: Type.STRING } },
         secondaryBullets: { type: Type.ARRAY, items: { type: Type.STRING } },
         headers: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -583,7 +626,10 @@ Return ONLY valid JSON:
             label: { type: Type.STRING }
           }
         },
-        speaker_notes: { type: Type.STRING },
+        speaker_notes: {
+          type: Type.STRING,
+          description: '2-3 natural, properly punctuated spoken sentences without any "Slide N:" prefix or concatenated raw bullets.'
+        },
         imageQuery: { type: Type.STRING }
       },
       required: ['layout', 'title', 'speaker_notes', 'imageQuery']
@@ -1072,42 +1118,196 @@ export async function exportDeckToPptx(deck: SlideDeck): Promise<{
           slide.secondaryBullets && slide.secondaryBullets.length > 0
             ? slide.secondaryBullets
             : [];
+        const hasColHeaders = Boolean(slide.leftTitle?.trim() || slide.rightTitle?.trim());
 
+        // Left comparison card
         pptSlide.addShape(pptx.ShapeType.roundRect, {
           x: 0.7,
           y: 1.72,
-          w: 4.1,
-          h: 3.2,
+          w: 4.15,
+          h: 3.22,
           fill: { color: theme.surface },
           line: { color: theme.border, width: 1 },
           rectRadius: 0.08
         });
+        // Subtle top accent bar on left card
+        pptSlide.addShape(pptx.ShapeType.rect, {
+          x: 0.7,
+          y: 1.72,
+          w: 4.15,
+          h: 0.06,
+          fill: { color: theme.accent },
+          line: { color: theme.accent, width: 0 }
+        });
+        if (hasColHeaders) {
+          pptSlide.addText(slide.leftTitle?.trim() || 'Perspective A', {
+            x: 0.92,
+            y: 1.9,
+            w: 3.7,
+            h: 0.36,
+            fontFace: FONT_DISPLAY,
+            fontSize: 13.5,
+            bold: true,
+            color: theme.accent,
+            fit: 'shrink'
+          });
+          pptSlide.addShape(pptx.ShapeType.line, {
+            x: 0.92,
+            y: 2.3,
+            w: 3.7,
+            h: 0,
+            line: { color: theme.border, width: 0.75 }
+          });
+        }
         pptSlide.addText(makeBulletRuns(leftBullets), {
-          x: 0.9,
-          y: 1.92,
+          x: 0.92,
+          y: hasColHeaders ? 2.4 : 1.94,
           w: 3.7,
-          h: 2.85,
+          h: hasColHeaders ? 2.4 : 2.84,
           valign: 'top',
           fit: 'shrink'
         });
 
+        // Right comparison card
         pptSlide.addShape(pptx.ShapeType.roundRect, {
-          x: 5.2,
+          x: 5.15,
           y: 1.72,
-          w: 4.1,
-          h: 3.2,
+          w: 4.15,
+          h: 3.22,
           fill: { color: theme.surface },
           line: { color: theme.border, width: 1 },
           rectRadius: 0.08
         });
+        pptSlide.addShape(pptx.ShapeType.rect, {
+          x: 5.15,
+          y: 1.72,
+          w: 4.15,
+          h: 0.06,
+          fill: { color: theme.accentSoft },
+          line: { color: theme.accentSoft, width: 0 }
+        });
+        if (hasColHeaders) {
+          pptSlide.addText(slide.rightTitle?.trim() || 'Perspective B', {
+            x: 5.37,
+            y: 1.9,
+            w: 3.7,
+            h: 0.36,
+            fontFace: FONT_DISPLAY,
+            fontSize: 13.5,
+            bold: true,
+            color: theme.accentSoft,
+            fit: 'shrink'
+          });
+          pptSlide.addShape(pptx.ShapeType.line, {
+            x: 5.37,
+            y: 2.3,
+            w: 3.7,
+            h: 0,
+            line: { color: theme.border, width: 0.75 }
+          });
+        }
         pptSlide.addText(makeBulletRuns(rightBullets.length > 0 ? rightBullets : leftBullets), {
-          x: 5.4,
-          y: 1.92,
+          x: 5.37,
+          y: hasColHeaders ? 2.4 : 1.94,
           w: 3.7,
-          h: 2.85,
+          h: hasColHeaders ? 2.4 : 2.84,
           valign: 'top',
           fit: 'shrink'
         });
+      } else if (slide.layout === 'key_takeaway') {
+        const primaryTakeaway =
+          slide.takeaway?.trim() ||
+          slide.subtitle?.trim() ||
+          slide.bullets[0] ||
+          slide.title;
+        const supportingPoints =
+          slide.takeaway?.trim() || slide.subtitle?.trim()
+            ? slide.bullets.slice(0, 3)
+            : slide.bullets.slice(1, 4);
+
+        // Elevated highlight callout card
+        const calloutH = supportingPoints.length > 0 ? 1.65 : 2.6;
+        pptSlide.addShape(pptx.ShapeType.roundRect, {
+          x: 0.7,
+          y: 1.75,
+          w: 8.6,
+          h: calloutH,
+          fill: { color: theme.surface },
+          line: { color: theme.accent, width: 1.25 },
+          rectRadius: 0.1
+        });
+        // Crisp left accent bar inside callout
+        pptSlide.addShape(pptx.ShapeType.rect, {
+          x: 0.7,
+          y: 1.75,
+          w: 0.1,
+          h: calloutH,
+          fill: { color: theme.accent },
+          line: { color: theme.accent, width: 0 }
+        });
+
+        pptSlide.addText('KEY TAKEAWAY', {
+          x: 1.02,
+          y: 1.9,
+          w: 7.9,
+          h: 0.28,
+          fontFace: FONT_BODY,
+          fontSize: 9.5,
+          bold: true,
+          color: theme.accent,
+          charSpacing: 2.2
+        });
+
+        pptSlide.addText(primaryTakeaway, {
+          x: 1.02,
+          y: 2.22,
+          w: 8.0,
+          h: calloutH - 0.6,
+          fontFace: FONT_DISPLAY,
+          fontSize: supportingPoints.length > 0 ? 18 : 22,
+          bold: true,
+          color: theme.text,
+          valign: 'middle',
+          fit: 'shrink'
+        });
+
+        if (supportingPoints.length > 0) {
+          const cardGap = 0.22;
+          const cardW = (8.6 - cardGap * (supportingPoints.length - 1)) / supportingPoints.length;
+          supportingPoints.forEach((pt, pIdx) => {
+            const cardX = 0.7 + pIdx * (cardW + cardGap);
+            pptSlide.addShape(pptx.ShapeType.roundRect, {
+              x: cardX,
+              y: 3.62,
+              w: cardW,
+              h: 1.32,
+              fill: { color: theme.surface },
+              line: { color: theme.border, width: 0.9 },
+              rectRadius: 0.08
+            });
+            pptSlide.addText(`0${pIdx + 1}`, {
+              x: cardX + 0.18,
+              y: 3.74,
+              w: cardW - 0.36,
+              h: 0.26,
+              fontFace: FONT_BODY,
+              fontSize: 10,
+              bold: true,
+              color: theme.accent
+            });
+            pptSlide.addText(pt, {
+              x: cardX + 0.18,
+              y: 4.02,
+              w: cardW - 0.36,
+              h: 0.82,
+              fontFace: FONT_BODY,
+              fontSize: 12,
+              color: theme.text,
+              valign: 'top',
+              fit: 'shrink'
+            });
+          });
+        }
       } else if (slide.layout === 'table' && slide.table && slide.table.headers.length > 0) {
         const colCount = slide.table.headers.length;
         const totalTableW = 8.6;

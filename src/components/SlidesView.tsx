@@ -34,7 +34,11 @@ import {
   SystemStats
 } from '../types';
 import { sfx } from '../services/soundEffects';
-import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
+import {
+  buildStudioModelOptions,
+  DEFAULT_STUDIO_MODEL,
+  formatModelOptionLabel
+} from '../utils/modelOptions';
 import { saveBlobFile } from '../utils/fileDownload';
 
 interface SlidesViewProps {
@@ -112,9 +116,10 @@ const LAYOUT_LABELS: Record<SlideLayoutType, string> = {
   title: 'Title Hero',
   split_image: 'Split + Image',
   bullets: 'Bullets',
-  two_column: 'Two Column',
+  two_column: 'Two-Column Comparison',
   stat_highlight: 'Key Metric',
-  table: 'Comparison Table'
+  table: 'Comparison Table',
+  key_takeaway: 'Key Takeaway'
 };
 
 function detectPromptSlideCount(
@@ -171,7 +176,7 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
   const [audience, setAudience] = useState<SlideAudience>('executive');
   const [themeId, setThemeId] = useState<SlideThemeId>('obsidian-orange');
   const [contextNotes, setContextNotes] = useState('');
-  const [includeMemory, setIncludeMemory] = useState(true);
+  const [includeMemory, setIncludeMemory] = useState(false);
 
   // Active Deck State (persisted across tab switches)
   const [deck, setDeck] = useState<SlideDeck | null>(() => {
@@ -278,6 +283,13 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
               ['Trade-off', 'Predictable reads', 'High write throughput']
             ]
           };
+        }
+        if (next.layout === 'two_column') {
+          if (!next.leftTitle) next.leftTitle = 'Option A';
+          if (!next.rightTitle) next.rightTitle = 'Option B';
+        }
+        if (next.layout === 'key_takeaway' && !next.takeaway) {
+          next.takeaway = next.subtitle || next.bullets[0] || next.title;
         }
         return next;
       });
@@ -402,7 +414,13 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
         for (let i = 0; i < updatedSlides.length; i++) {
           const s = updatedSlides[i];
           if (s.image) continue;
-          if (s.layout === 'two_column' || s.layout === 'stat_highlight' || s.layout === 'table') continue;
+          if (
+            s.layout === 'two_column' ||
+            s.layout === 'stat_highlight' ||
+            s.layout === 'table' ||
+            s.layout === 'key_takeaway'
+          )
+            continue;
 
           const q = (s.imageQuery || s.title).trim();
           if (!q) continue;
@@ -773,43 +791,132 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                   </div>
                 </div>
               ) : slide.layout === 'two_column' ? (
-                <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+                <div className="flex-1 grid grid-cols-2 gap-3.5 min-h-0">
                   <div
-                    className="rounded-lg border p-3.5 overflow-y-auto"
+                    className="rounded-lg border overflow-hidden flex flex-col min-h-0"
                     style={{ backgroundColor: t.surface, borderColor: t.border }}
                   >
-                    <ul className="space-y-2">
-                      {slide.bullets.map((b, bi) => (
-                        <li key={bi} className="flex items-start gap-2 text-xs sm:text-sm leading-snug">
-                          <span
-                            className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0"
-                            style={{ backgroundColor: t.accent }}
-                          />
-                          <span>{b}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="h-1 w-full shrink-0" style={{ backgroundColor: t.accent }} />
+                    <div className="p-2.5 sm:p-3 flex-1 overflow-y-auto space-y-1.5">
+                      {slide.leftTitle && (
+                        <div
+                          className="text-[11px] sm:text-xs font-display font-semibold pb-1 border-b truncate"
+                          style={{ color: t.accent, borderColor: t.border }}
+                        >
+                          {slide.leftTitle}
+                        </div>
+                      )}
+                      <ul className="space-y-1.5">
+                        {slide.bullets.map((b, bi) => (
+                          <li key={bi} className="flex items-start gap-2 text-[11px] sm:text-xs leading-snug">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0"
+                              style={{ backgroundColor: t.accent }}
+                            />
+                            <span>{b}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                   <div
-                    className="rounded-lg border p-3.5 overflow-y-auto"
+                    className="rounded-lg border overflow-hidden flex flex-col min-h-0"
                     style={{ backgroundColor: t.surface, borderColor: t.border }}
                   >
-                    <ul className="space-y-2">
-                      {(slide.secondaryBullets && slide.secondaryBullets.length > 0
-                        ? slide.secondaryBullets
-                        : ['Add second-column points in the editor']
-                      ).map((b, bi) => (
-                        <li key={bi} className="flex items-start gap-2 text-xs sm:text-sm leading-snug">
-                          <span
-                            className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0"
-                            style={{ backgroundColor: t.accent }}
-                          />
-                          <span>{b}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div
+                      className="h-1 w-full shrink-0 opacity-75"
+                      style={{ backgroundColor: t.accent }}
+                    />
+                    <div className="p-2.5 sm:p-3 flex-1 overflow-y-auto space-y-1.5">
+                      {slide.rightTitle && (
+                        <div
+                          className="text-[11px] sm:text-xs font-display font-semibold pb-1 border-b truncate"
+                          style={{ color: t.text, borderColor: t.border }}
+                        >
+                          {slide.rightTitle}
+                        </div>
+                      )}
+                      <ul className="space-y-1.5">
+                        {(slide.secondaryBullets && slide.secondaryBullets.length > 0
+                          ? slide.secondaryBullets
+                          : ['Add right-column comparison points in the editor']
+                        ).map((b, bi) => (
+                          <li key={bi} className="flex items-start gap-2 text-[11px] sm:text-xs leading-snug">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0"
+                              style={{ backgroundColor: t.accent }}
+                            />
+                            <span>{b}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 </div>
+              ) : slide.layout === 'key_takeaway' ? (
+                (() => {
+                  const primaryTakeaway =
+                    slide.takeaway?.trim() ||
+                    slide.subtitle?.trim() ||
+                    slide.bullets[0] ||
+                    slide.title;
+                  const supporting =
+                    slide.takeaway?.trim() || slide.subtitle?.trim()
+                      ? slide.bullets.slice(0, 3)
+                      : slide.bullets.slice(1, 4);
+                  return (
+                    <div className="flex-1 flex flex-col gap-2 min-h-0">
+                      <div
+                        className="shrink-0 rounded-lg border relative overflow-hidden pl-4 pr-3.5 py-2.5"
+                        style={{ backgroundColor: t.surface, borderColor: t.accent }}
+                      >
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-1.5"
+                          style={{ backgroundColor: t.accent }}
+                        />
+                        <div
+                          className="text-[9px] font-mono font-semibold uppercase tracking-widest mb-1 leading-none"
+                          style={{ color: t.accent }}
+                        >
+                          Key Takeaway
+                        </div>
+                        <p className="text-xs sm:text-[13px] font-display font-semibold leading-snug line-clamp-2">
+                          {primaryTakeaway}
+                        </p>
+                      </div>
+
+                      {supporting.length > 0 && (
+                        <div
+                          className={`flex-1 min-h-0 grid gap-2 items-stretch ${
+                            supporting.length === 1
+                              ? 'grid-cols-1'
+                              : supporting.length === 2
+                              ? 'grid-cols-2'
+                              : 'grid-cols-3'
+                          }`}
+                        >
+                          {supporting.map((pt, pi) => (
+                            <div
+                              key={pi}
+                              className="rounded-lg border px-2.5 py-2 flex flex-col gap-1 min-h-0 overflow-hidden"
+                              style={{ backgroundColor: t.surface, borderColor: t.border }}
+                            >
+                              <span
+                                className="text-[9px] font-mono font-bold tabular-nums leading-none shrink-0"
+                                style={{ color: t.accent }}
+                              >
+                                {String(pi + 1).padStart(2, '0')}
+                              </span>
+                              <span className="text-[10px] sm:text-[11px] leading-snug line-clamp-3">
+                                {pt}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
               ) : slide.layout === 'stat_highlight' ? (
                 <div className="flex-1 grid grid-cols-12 gap-5 min-h-0 items-center">
                   <div
@@ -986,7 +1093,7 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
             >
               {modelOptions.map((m) => (
                 <option key={m} value={m} className="bg-[#111115] text-zinc-100">
-                  {m}
+                  {formatModelOptionLabel(m)}
                 </option>
               ))}
             </select>
@@ -1313,10 +1420,12 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                                 <div className="h-1 w-1/2 rounded-sm" style={{ backgroundColor: t.muted, opacity: 0.6 }} />
                               </div>
                             </div>
-                            <div className="text-xs font-semibold text-zinc-100 truncate">
+                            <div className="text-xs font-semibold text-zinc-100 leading-snug">
                               {t.name}
                             </div>
-                            <div className="text-[11px] text-zinc-500 truncate">{t.tagline}</div>
+                            <div className="text-[11px] text-zinc-400 leading-snug mt-0.5">
+                              {t.tagline}
+                            </div>
                           </button>
                         );
                       })}
@@ -1617,12 +1726,19 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                             type="button"
                             onClick={() => updateActiveSlide({ layout: lay })}
                             className={`px-2.5 py-1.5 rounded-lg border text-xs text-left transition-colors ${
+                              lay === 'key_takeaway' ? 'col-span-2 flex items-center justify-between' : ''
+                            } ${
                               activeSlide.layout === lay
                                 ? 'bg-orange-500/12 border-orange-500/50 text-orange-300 font-medium'
                                 : 'bg-[#111115] border-zinc-800 text-zinc-400 hover:text-zinc-200'
                             }`}
                           >
-                            {LAYOUT_LABELS[lay]}
+                            <span>{LAYOUT_LABELS[lay]}</span>
+                            {lay === 'key_takeaway' && (
+                              <span className="text-[10px] text-zinc-500 font-normal">
+                                Summary / Closing
+                              </span>
+                            )}
                           </button>
                         ))}
                       </div>
@@ -1657,6 +1773,52 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                           value={activeSlide.subtitle || ''}
                           onChange={(e) => updateActiveSlide({ subtitle: e.target.value })}
                           className="w-full bg-[#070709] border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-orange-500/70 resize-none"
+                        />
+                      </div>
+                    )}
+
+                    {/* Two-Column Comparison Header Inputs */}
+                    {activeSlide.layout === 'two_column' && (
+                      <div className="grid grid-cols-2 gap-2.5 pt-1">
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-zinc-400">
+                            Left Column Title
+                          </label>
+                          <input
+                            type="text"
+                            value={activeSlide.leftTitle || ''}
+                            onChange={(e) => updateActiveSlide({ leftTitle: e.target.value })}
+                            placeholder="e.g. Advantages"
+                            className="w-full bg-[#070709] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-orange-300 focus:outline-none focus:border-orange-500/70"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-xs font-medium text-zinc-400">
+                            Right Column Title
+                          </label>
+                          <input
+                            type="text"
+                            value={activeSlide.rightTitle || ''}
+                            onChange={(e) => updateActiveSlide({ rightTitle: e.target.value })}
+                            placeholder="e.g. Trade-Offs"
+                            className="w-full bg-[#070709] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-orange-500/70"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Key Takeaway Callout Editor */}
+                    {activeSlide.layout === 'key_takeaway' && (
+                      <div className="space-y-1.5 pt-1">
+                        <label className="block text-xs font-medium text-zinc-400">
+                          Core Takeaway Callout
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={activeSlide.takeaway || ''}
+                          onChange={(e) => updateActiveSlide({ takeaway: e.target.value })}
+                          placeholder="State the single most important conclusion or call to action..."
+                          className="w-full bg-[#070709] border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-orange-500/70 resize-none leading-relaxed"
                         />
                       </div>
                     )}
@@ -1855,7 +2017,11 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-zinc-400">
-                            {activeSlide.layout === 'two_column' ? 'Left Column Points' : 'Bullet Points'}
+                            {activeSlide.layout === 'two_column'
+                              ? 'Left Column Points'
+                              : activeSlide.layout === 'key_takeaway'
+                              ? 'Supporting Action Items (Up to 3)'
+                              : 'Bullet Points'}
                           </span>
                           <button
                             type="button"

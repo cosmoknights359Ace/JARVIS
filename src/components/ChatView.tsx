@@ -28,6 +28,238 @@ import { DictationService, SpeechService } from '../services/speech';
 import { sfx } from '../services/soundEffects';
 import { ArcReactor } from './ArcReactor';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { formatModelOptionLabel } from '../utils/modelOptions';
+
+interface ChatMessageItemProps {
+  message: ChatMessage;
+  isLatestAssist: boolean;
+  isStreamingMessage: boolean;
+  isAnyStreaming: boolean;
+  resolvedModel: string;
+  isCopied: boolean;
+  isSpeaking: boolean;
+  isEditing: boolean;
+  editingText: string;
+  onChangeEditingText: (val: string) => void;
+  onCancelEdit: () => void;
+  onCommitEdit: () => void;
+  onStartEdit: (msg: ChatMessage) => void;
+  onCopy: (content: string, id: string) => void;
+  onSpeak: (msg: ChatMessage) => void;
+  onRegenerate: () => void;
+}
+
+const ChatMessageItem = React.memo<ChatMessageItemProps>(
+  ({
+    message: m,
+    isLatestAssist,
+    isStreamingMessage,
+    isAnyStreaming,
+    resolvedModel,
+    isCopied,
+    isSpeaking,
+    isEditing,
+    editingText,
+    onChangeEditingText,
+    onCancelEdit,
+    onCommitEdit,
+    onStartEdit,
+    onCopy,
+    onSpeak,
+    onRegenerate
+  }) => {
+    const isUser = m.role === 'user';
+
+    return (
+      <div className={`group flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Unboxed Metadata Header (Zero Pills) */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 mb-1.5 px-1">
+          <span className="font-semibold text-zinc-300">
+            {isUser ? 'You' : 'J.A.R.V.I.S'}
+          </span>
+          {!isUser && m.model && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-orange-400">{m.model}</span>
+            </>
+          )}
+          {!isUser && typeof m.ttftMs === 'number' && m.ttftMs > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono tabular-nums text-zinc-400">{m.ttftMs}ms</span>
+            </>
+          )}
+          {!isUser && typeof m.tokensPerSec === 'number' && m.tokensPerSec > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono tabular-nums text-zinc-400">
+                {m.tokensPerSec} tok/s
+              </span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <span className="font-mono tabular-nums">{m.timestamp}</span>
+        </div>
+
+        {/* Message Bubble / Card */}
+        <div
+          className={`rounded-2xl px-4 py-3.5 border ${
+            isUser
+              ? 'max-w-2xl bg-orange-500/10 border-orange-500/35 text-zinc-100'
+              : m.isError
+              ? 'w-full bg-rose-500/10 border-rose-500/35 text-rose-200'
+              : 'w-full bg-[#111115]/95 border-zinc-800/90 text-zinc-200 backdrop-blur-xs'
+          }`}
+        >
+          {isUser ? (
+            isEditing ? (
+              <div className="space-y-2.5 min-w-[260px] sm:min-w-[380px]">
+                <textarea
+                  value={editingText}
+                  onChange={(e) => onChangeEditingText(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      onCommitEdit();
+                    } else if (e.key === 'Escape') {
+                      onCancelEdit();
+                    }
+                  }}
+                  className="w-full bg-[#070709] border border-zinc-700 focus:border-orange-500 rounded-xl p-2.5 text-sm text-zinc-100 focus:outline-none resize-y"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={onCancelEdit}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onCommitEdit}
+                    disabled={!editingText.trim() || isAnyStreaming}
+                    className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-black text-xs font-semibold transition-colors"
+                  >
+                    Save & Resend
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                {m.content}
+              </p>
+            )
+          ) : m.isError ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 text-xs leading-relaxed">
+                <AlertTriangle size={15} className="text-rose-400 shrink-0 mt-0.5" />
+                <span>{m.content}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onRegenerate}
+                disabled={isAnyStreaming}
+                className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-semibold flex items-center gap-1.5 self-start sm:self-center shrink-0 transition-colors"
+              >
+                <RefreshCw size={12} />
+                <span>Retry</span>
+              </button>
+            </div>
+          ) : !m.content && isStreamingMessage ? (
+            <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
+              <span className="inline-block w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
+              <span>Generating with {m.model || resolvedModel}...</span>
+            </div>
+          ) : (
+            <MarkdownRenderer
+              content={m.content}
+              messageId={m.id}
+              isStreaming={isStreamingMessage}
+            />
+          )}
+        </div>
+
+        {/* Per-Message Action Bar */}
+        {!isEditing && m.content && (
+          <div className="flex items-center gap-1 mt-1.5 px-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
+            <button
+              type="button"
+              onClick={() => onCopy(m.content, m.id)}
+              className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 flex items-center gap-1 transition-colors"
+              title="Copy message"
+            >
+              {isCopied ? (
+                <>
+                  <Check size={12} className="text-emerald-400" />
+                  <span className="text-emerald-400">Copied</span>
+                </>
+              ) : (
+                <>
+                  <Copy size={12} />
+                  <span>Copy</span>
+                </>
+              )}
+            </button>
+
+            {isUser ? (
+              <button
+                type="button"
+                onClick={() => onStartEdit(m)}
+                disabled={isAnyStreaming}
+                className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                title="Edit and resend"
+              >
+                <Pencil size={12} />
+                <span>Edit</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onSpeak(m)}
+                  className={`px-2 py-1 rounded-md text-[11px] flex items-center gap-1 transition-colors ${
+                    isSpeaking
+                      ? 'text-orange-400 bg-orange-500/10'
+                      : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                  title={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+                >
+                  {isSpeaking ? (
+                    <>
+                      <VolumeX size={12} />
+                      <span>Stop</span>
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 size={12} />
+                      <span>Speak</span>
+                    </>
+                  )}
+                </button>
+
+                {isLatestAssist && !m.isError && (
+                  <button
+                    type="button"
+                    onClick={onRegenerate}
+                    disabled={isAnyStreaming}
+                    className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                    title="Regenerate response"
+                  >
+                    <RefreshCw size={12} />
+                    <span>Regenerate</span>
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+);
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -263,39 +495,49 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleCopyMessage = (content: string, id: string) => {
+  const handleCopyMessage = useCallback((content: string, id: string) => {
     navigator.clipboard.writeText(content).catch(() => {});
     setCopiedMsgId(id);
     setTimeout(() => setCopiedMsgId(null), 1800);
-  };
+  }, []);
 
-  const handleSpeakMessage = (msg: ChatMessage) => {
-    if (speakingMsgId === msg.id) {
-      SpeechService.stop();
-      setSpeakingMsgId(null);
-      return;
-    }
-    setSpeakingMsgId(msg.id);
-    SpeechService.speak(msg.content, {
-      voiceName: settings.preferredVoice,
-      rate: settings.voiceRate,
-      pitch: settings.voicePitch,
-      onEnd: () => setSpeakingMsgId(null),
-      onError: () => setSpeakingMsgId(null)
-    });
-  };
+  const speakingMsgIdRef = useRef<string | null>(null);
+  speakingMsgIdRef.current = speakingMsgId;
 
-  const stopAllSpeech = () => {
+  const handleSpeakMessage = useCallback(
+    (msg: ChatMessage) => {
+      if (speakingMsgIdRef.current === msg.id) {
+        SpeechService.stop();
+        setSpeakingMsgId(null);
+        return;
+      }
+      setSpeakingMsgId(msg.id);
+      SpeechService.speak(msg.content, {
+        voiceName: settings.preferredVoice,
+        rate: settings.voiceRate,
+        pitch: settings.voicePitch,
+        onEnd: () => setSpeakingMsgId(null),
+        onError: () => setSpeakingMsgId(null)
+      });
+    },
+    [settings.preferredVoice, settings.voiceRate, settings.voicePitch]
+  );
+
+  const stopAllSpeech = useCallback(() => {
     SpeechService.stop();
     setSpeakingMsgId(null);
-  };
+  }, []);
 
-  const startEditMessage = (msg: ChatMessage) => {
+  const startEditMessage = useCallback((msg: ChatMessage) => {
     setEditingMsgId(msg.id);
     setEditingText(msg.content);
-  };
+  }, []);
 
-  const commitEditMessage = () => {
+  const cancelEditMessage = useCallback(() => {
+    setEditingMsgId(null);
+  }, []);
+
+  const commitEditMessage = useCallback(() => {
     if (!editingMsgId) return;
     const trimmed = editingText.trim();
     if (!trimmed || isStreaming) return;
@@ -304,7 +546,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setEditingText('');
     setIsNearBottom(true);
     onEditMessage(targetId, trimmed);
-  };
+  }, [editingMsgId, editingText, isStreaming, onEditMessage]);
 
   const modelChoices = Array.from(
     new Set(['auto', settings.generalModel, settings.codingModel, ...stats.installedModels])
@@ -503,11 +745,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
               value={selectedModel}
               onChange={(e) => onSelectModel(e.target.value)}
               aria-label="Select AI Model"
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[175px] truncate shrink-0"
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[225px] truncate shrink-0"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
-                  {m === 'auto' ? `auto (${stats.resolvedModel})` : m}
+                  {formatModelOptionLabel(m, stats.resolvedModel)}
                 </option>
               ))}
             </select>
@@ -631,195 +873,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   const isLatestAssist = !isUser && m.id === lastAssistantId;
 
                   return (
-                    <div
+                    <ChatMessageItem
                       key={m.id}
-                      className={`group flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-                    >
-                      {/* Unboxed Metadata Header (Zero Pills) */}
-                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 mb-1.5 px-1">
-                        <span className="font-semibold text-zinc-300">
-                          {isUser ? 'You' : 'J.A.R.V.I.S'}
-                        </span>
-                        {!isUser && m.model && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono text-orange-400">{m.model}</span>
-                          </>
-                        )}
-                        {!isUser && typeof m.ttftMs === 'number' && m.ttftMs > 0 && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono tabular-nums text-zinc-400">
-                              {m.ttftMs}ms
-                            </span>
-                          </>
-                        )}
-                        {!isUser && typeof m.tokensPerSec === 'number' && m.tokensPerSec > 0 && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono tabular-nums text-zinc-400">
-                              {m.tokensPerSec} tok/s
-                            </span>
-                          </>
-                        )}
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono tabular-nums">{m.timestamp}</span>
-                      </div>
-
-                      {/* Message Bubble / Card */}
-                      <div
-                        className={`rounded-2xl px-4 py-3.5 border ${
-                          isUser
-                            ? 'max-w-2xl bg-orange-500/10 border-orange-500/35 text-zinc-100'
-                            : m.isError
-                            ? 'w-full bg-rose-500/10 border-rose-500/35 text-rose-200'
-                            : 'w-full bg-[#111115]/95 border-zinc-800/90 text-zinc-200 backdrop-blur-xs'
-                        }`}
-                      >
-                        {isUser ? (
-                          isEditingThis ? (
-                            <div className="space-y-2.5 min-w-[260px] sm:min-w-[380px]">
-                              <textarea
-                                value={editingText}
-                                onChange={(e) => setEditingText(e.target.value)}
-                                rows={3}
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    commitEditMessage();
-                                  } else if (e.key === 'Escape') {
-                                    setEditingMsgId(null);
-                                  }
-                                }}
-                                className="w-full bg-[#070709] border border-zinc-700 focus:border-orange-500 rounded-xl p-2.5 text-sm text-zinc-100 focus:outline-none resize-y"
-                              />
-                              <div className="flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingMsgId(null)}
-                                  className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-medium transition-colors"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={commitEditMessage}
-                                  disabled={!editingText.trim() || isStreaming}
-                                  className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-black text-xs font-semibold transition-colors"
-                                >
-                                  Save & Resend
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                              {m.content}
-                            </p>
-                          )
-                        ) : m.isError ? (
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                            <div className="flex items-start gap-2.5 text-xs leading-relaxed">
-                              <AlertTriangle size={15} className="text-rose-400 shrink-0 mt-0.5" />
-                              <span>{m.content}</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={onRegenerate}
-                              disabled={isStreaming}
-                              className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-semibold flex items-center gap-1.5 self-start sm:self-center shrink-0 transition-colors"
-                            >
-                              <RefreshCw size={12} />
-                              <span>Retry</span>
-                            </button>
-                          </div>
-                        ) : !m.content && isStreaming && isLatestAssist ? (
-                          <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
-                            <span className="inline-block w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
-                            <span>
-                              Generating with {m.model || stats.resolvedModel}...
-                            </span>
-                          </div>
-                        ) : (
-                          <MarkdownRenderer content={m.content} messageId={m.id} />
-                        )}
-                      </div>
-
-                      {/* Per-Message Action Bar */}
-                      {!isEditingThis && m.content && (
-                        <div className="flex items-center gap-1 mt-1.5 px-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={() => handleCopyMessage(m.content, m.id)}
-                            className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 flex items-center gap-1 transition-colors"
-                            title="Copy message"
-                          >
-                            {copiedMsgId === m.id ? (
-                              <>
-                                <Check size={12} className="text-emerald-400" />
-                                <span className="text-emerald-400">Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={12} />
-                                <span>Copy</span>
-                              </>
-                            )}
-                          </button>
-
-                          {isUser ? (
-                            <button
-                              type="button"
-                              onClick={() => startEditMessage(m)}
-                              disabled={isStreaming}
-                              className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
-                              title="Edit and resend"
-                            >
-                              <Pencil size={12} />
-                              <span>Edit</span>
-                            </button>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleSpeakMessage(m)}
-                                className={`px-2 py-1 rounded-md text-[11px] flex items-center gap-1 transition-colors ${
-                                  speakingMsgId === m.id
-                                    ? 'text-orange-400 bg-orange-500/10'
-                                    : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
-                                }`}
-                                title={speakingMsgId === m.id ? 'Stop speaking' : 'Read aloud'}
-                              >
-                                {speakingMsgId === m.id ? (
-                                  <>
-                                    <VolumeX size={12} />
-                                    <span>Stop</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Volume2 size={12} />
-                                    <span>Speak</span>
-                                  </>
-                                )}
-                              </button>
-
-                              {isLatestAssist && !m.isError && (
-                                <button
-                                  type="button"
-                                  onClick={onRegenerate}
-                                  disabled={isStreaming}
-                                  className="px-2 py-1 rounded-md text-[11px] text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 disabled:opacity-40 flex items-center gap-1 transition-colors"
-                                  title="Regenerate response"
-                                >
-                                  <RefreshCw size={12} />
-                                  <span>Regenerate</span>
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                      message={m}
+                      isLatestAssist={isLatestAssist}
+                      isStreamingMessage={isStreaming && isLatestAssist}
+                      isAnyStreaming={isStreaming}
+                      resolvedModel={stats.resolvedModel}
+                      isCopied={copiedMsgId === m.id}
+                      isSpeaking={speakingMsgId === m.id}
+                      isEditing={isEditingThis}
+                      editingText={isEditingThis ? editingText : ''}
+                      onChangeEditingText={setEditingText}
+                      onCancelEdit={cancelEditMessage}
+                      onCommitEdit={commitEditMessage}
+                      onStartEdit={startEditMessage}
+                      onCopy={handleCopyMessage}
+                      onSpeak={handleSpeakMessage}
+                      onRegenerate={onRegenerate}
+                    />
                   );
                 })}
               </div>

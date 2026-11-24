@@ -1,161 +1,95 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Copy, Check } from 'lucide-react';
+import {
+  splitMarkdownFences,
+  tokenizeCodeLine,
+  parseInlineTokens,
+  CodeTokenKind,
+  InlineToken
+} from '../utils/markdownParser';
 
 interface MarkdownRendererProps {
   content: string;
   messageId: string;
+  isStreaming?: boolean;
 }
 
-const CODE_KEYWORDS = new Set([
-  'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'def', 'default',
-  'delete', 'do', 'elif', 'else', 'enum', 'export', 'extends', 'false', 'final', 'finally',
-  'fn', 'for', 'from', 'func', 'function', 'if', 'implements', 'import', 'in', 'interface',
-  'let', 'match', 'mut', 'new', 'None', 'null', 'override', 'package', 'private', 'protected',
-  'pub', 'public', 'raise', 'return', 'select', 'SELECT', 'FROM', 'WHERE', 'JOIN', 'INSERT',
-  'UPDATE', 'DELETE', 'CREATE', 'TABLE', 'ORDER', 'GROUP', 'BY', 'static', 'struct', 'super',
-  'switch', 'this', 'throw', 'true', 'True', 'False', 'try', 'type', 'typeof', 'undefined',
-  'use', 'using', 'val', 'var', 'void', 'while', 'with', 'yield'
-]);
+const TOKEN_CLASS_MAP: Record<CodeTokenKind, string | null> = {
+  plain: null,
+  comment: 'text-zinc-500 italic',
+  string: 'text-emerald-300',
+  number: 'text-amber-300',
+  keyword: 'text-orange-400 font-medium',
+  type: 'text-sky-300'
+};
 
-const TOKEN_REGEX =
-  /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)/g;
+function renderHighlightedLine(line: string, lang: string): React.ReactNode[] {
+  const tokens = tokenizeCodeLine(line, lang);
+  if (tokens.length === 0) return [''];
+  if (tokens.length === 1 && tokens[0].kind === 'plain') return [tokens[0].value];
 
-function highlightCodeLine(line: string, lang: string): React.ReactNode[] {
-  const lowerLang = lang.toLowerCase();
-  const isTextOnly = lowerLang === 'text' || lowerLang === 'txt' || lowerLang === 'plain';
-  if (isTextOnly || !line) {
-    return [line];
-  }
-
-  const nodes: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-
-  TOKEN_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = TOKEN_REGEX.exec(line)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(line.slice(lastIndex, match.index));
-    }
-
-    const token = match[0];
-    let className: string | null = null;
-
-    if (
-      token.startsWith('//') ||
-      token.startsWith('/*') ||
-      (token.startsWith('#') && !['css', 'html', 'xml'].includes(lowerLang))
-    ) {
-      className = 'text-zinc-500 italic';
-    } else if (
-      token.startsWith('"') ||
-      token.startsWith("'") ||
-      token.startsWith('`')
-    ) {
-      className = 'text-emerald-300';
-    } else if (/^\d/.test(token)) {
-      className = 'text-amber-300';
-    } else if (CODE_KEYWORDS.has(token)) {
-      className = 'text-orange-400 font-medium';
-    } else if (/^[A-Z][A-Za-z0-9_]*$/.test(token) && token.length > 1) {
-      className = 'text-sky-300';
-    }
-
-    if (className) {
-      nodes.push(
-        <span key={key++} className={className}>
-          {token}
-        </span>
-      );
-    } else {
-      nodes.push(token);
-    }
-
-    lastIndex = match.index + token.length;
-  }
-
-  if (lastIndex < line.length) {
-    nodes.push(line.slice(lastIndex));
-  }
-
-  return nodes;
+  return tokens.map((tok, idx) => {
+    const cls = TOKEN_CLASS_MAP[tok.kind];
+    if (!cls) return tok.value;
+    return (
+      <span key={idx} className={cls}>
+        {tok.value}
+      </span>
+    );
+  });
 }
 
-const INLINE_REGEX =
-  /(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|\*[^*\n]+\*)/g;
-
-function renderInline(text: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-
-  INLINE_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = INLINE_REGEX.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-
-    const token = match[0];
-
-    if (token.startsWith('[')) {
-      const linkMatch = token.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-      if (linkMatch) {
-        nodes.push(
+function renderInlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[] {
+  return tokens.map((tok, idx) => {
+    const key = `${keyPrefix}-${idx}`;
+    switch (tok.type) {
+      case 'text':
+        return tok.text;
+      case 'code':
+        return (
+          <code
+            key={key}
+            className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono text-[12px] text-orange-300"
+          >
+            {tok.text}
+          </code>
+        );
+      case 'link':
+        return (
           <a
-            key={key++}
-            href={linkMatch[2]}
+            key={key}
+            href={tok.href}
             target="_blank"
             rel="noopener noreferrer"
             className="text-orange-400 underline underline-offset-2 hover:text-orange-300 font-medium transition-colors"
           >
-            {linkMatch[1]}
+            {tok.label}
           </a>
         );
-      } else {
-        nodes.push(token);
-      }
-    } else if (token.startsWith('`')) {
-      nodes.push(
-        <code
-          key={key++}
-          className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono text-[12px] text-orange-300"
-        >
-          {token.slice(1, -1)}
-        </code>
-      );
-    } else if (token.startsWith('**')) {
-      nodes.push(
-        <strong key={key++} className="font-semibold text-zinc-50">
-          {renderInline(token.slice(2, -2))}
-        </strong>
-      );
-    } else if (token.startsWith('~~')) {
-      nodes.push(
-        <del key={key++} className="text-zinc-500 line-through">
-          {renderInline(token.slice(2, -2))}
-        </del>
-      );
-    } else if (token.startsWith('*')) {
-      nodes.push(
-        <em key={key++} className="italic text-zinc-200">
-          {renderInline(token.slice(1, -1))}
-        </em>
-      );
-    } else {
-      nodes.push(token);
+      case 'bold':
+        return (
+          <strong key={key} className="font-semibold text-zinc-50">
+            {renderInlineNodes(tok.children, key)}
+          </strong>
+        );
+      case 'strike':
+        return (
+          <del key={key} className="text-zinc-500 line-through">
+            {renderInlineNodes(tok.children, key)}
+          </del>
+        );
+      case 'italic':
+        return (
+          <em key={key} className="italic text-zinc-200">
+            {renderInlineNodes(tok.children, key)}
+          </em>
+        );
     }
+  });
+}
 
-    lastIndex = match.index + token.length;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes;
+function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
+  return renderInlineNodes(parseInlineTokens(text), keyPrefix);
 }
 
 function splitTableCells(line: string): string[] {
@@ -195,7 +129,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
     const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const headingContent = renderInline(headingMatch[2]);
+      const headingContent = renderInline(headingMatch[2], `${keyPrefix}-h-${i}`);
       if (level === 1) {
         elements.push(
           <h1
@@ -251,7 +185,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
                     key={hIdx}
                     className="px-3.5 py-2.5 font-display font-semibold text-zinc-200 whitespace-nowrap"
                   >
-                    {renderInline(h)}
+                    {renderInline(h, `${keyPrefix}-th-${i}-${hIdx}`)}
                   </th>
                 ))}
               </tr>
@@ -264,7 +198,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
                       key={cIdx}
                       className="px-3.5 py-2.5 text-zinc-300 align-top tabular-nums"
                     >
-                      {renderInline(row[cIdx] ?? '')}
+                      {renderInline(row[cIdx] ?? '', `${keyPrefix}-td-${i}-${rIdx}-${cIdx}`)}
                     </td>
                   ))}
                 </tr>
@@ -289,7 +223,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
           className="my-2.5 px-3.5 py-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-sm text-zinc-300 leading-relaxed space-y-1"
         >
           {quoteLines.map((qLine, qIdx) => (
-            <p key={qIdx}>{renderInline(qLine)}</p>
+            <p key={qIdx}>{renderInline(qLine, `${keyPrefix}-bq-${i}-${qIdx}`)}</p>
           ))}
         </blockquote>
       );
@@ -316,7 +250,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
               key={idx}
               style={item.indent >= 2 ? { marginLeft: `${Math.min(item.indent * 6, 24)}px` } : undefined}
             >
-              {renderInline(item.text)}
+              {renderInline(item.text, `${keyPrefix}-ul-${i}-${idx}`)}
             </li>
           ))}
         </ul>
@@ -338,7 +272,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
           className="my-2 space-y-1.5 pl-5 list-decimal marker:text-orange-400 marker:font-mono marker:text-xs text-sm text-zinc-200 leading-relaxed"
         >
           {items.map((item, idx) => (
-            <li key={idx}>{renderInline(item)}</li>
+            <li key={idx}>{renderInline(item, `${keyPrefix}-ol-${i}-${idx}`)}</li>
           ))}
         </ol>
       );
@@ -366,7 +300,7 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
         {paraLines.map((pLine, pIdx) => (
           <React.Fragment key={pIdx}>
             {pIdx > 0 && <br />}
-            {renderInline(pLine)}
+            {renderInline(pLine, `${keyPrefix}-p-${i}-${pIdx}`)}
           </React.Fragment>
         ))}
       </p>
@@ -376,8 +310,20 @@ function renderMarkdownBlocks(blockText: string, keyPrefix: string): React.React
   return elements;
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, messageId }) => {
+const MarkdownRendererInner: React.FC<MarkdownRendererProps> = ({
+  content,
+  messageId,
+  isStreaming = false
+}) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const segments = useMemo(() => splitMarkdownFences(content), [content]);
+
+  const handleCopyCode = useCallback((code: string, id: string) => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1800);
+  }, []);
 
   if (!content) {
     return (
@@ -388,30 +334,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, mes
     );
   }
 
-  // Safely close an in-flight streaming code fence so code blocks render without flicker
-  const fenceMatches = content.match(/```/g) || [];
-  const normalized = fenceMatches.length % 2 === 1 ? `${content}\n\`\`\`` : content;
-  const parts = normalized.split(/(```[\s\S]*?```)/g);
-
-  const handleCopyCode = (code: string, id: string) => {
-    navigator.clipboard.writeText(code).catch(() => {});
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 1800);
-  };
-
   return (
     <div className="space-y-2 break-words">
-      {parts.map((part, idx) => {
-        if (!part) return null;
-
-        if (part.startsWith('```') && part.endsWith('```')) {
-          const inner = part.slice(3, -3);
-          const firstNl = inner.indexOf('\n');
-          const lang = firstNl !== -1 ? inner.slice(0, firstNl).trim() : '';
-          const rawCode = firstNl !== -1 ? inner.slice(firstNl + 1) : inner;
-          const code = rawCode.replace(/\n$/, '');
-          const codeLines = code.split('\n');
+      {segments.map((seg, idx) => {
+        if (seg.type === 'code') {
           const blockId = `${messageId}-code-${idx}`;
+          const lineCount = seg.code ? seg.code.split('\n').length : 0;
 
           return (
             <div
@@ -420,15 +348,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, mes
             >
               <div className="flex items-center justify-between px-3.5 py-2 bg-zinc-900/90 border-b border-zinc-800 text-xs font-mono">
                 <div className="flex items-center gap-2 text-zinc-400">
-                  <span className="text-orange-400 font-medium">{lang || 'code'}</span>
+                  <span className="text-orange-400 font-medium">{seg.lang || 'code'}</span>
                   <span aria-hidden="true" className="text-zinc-700">·</span>
                   <span className="text-zinc-500 tabular-nums">
-                    {codeLines.length} {codeLines.length === 1 ? 'line' : 'lines'}
+                    {lineCount} {lineCount === 1 ? 'line' : 'lines'}
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => handleCopyCode(code, blockId)}
+                  onClick={() => handleCopyCode(seg.code, blockId)}
                   className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-orange-400 transition-colors whitespace-nowrap"
                   title="Copy code block"
                 >
@@ -445,14 +373,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, mes
                   )}
                 </button>
               </div>
-              <pre className="p-4 overflow-x-auto text-xs font-mono text-zinc-200 leading-relaxed">
-                <code>
-                  {codeLines.map((line, lIdx) => (
-                    <span key={lIdx} className="block">
-                      {highlightCodeLine(line, lang)}
-                    </span>
-                  ))}
-                </code>
+              {/* Lightweight plain <pre><code> while streaming; full syntax highlighting once finished */}
+              <pre
+                data-highlighted={isStreaming ? 'false' : 'true'}
+                className="p-4 overflow-x-auto text-xs font-mono text-zinc-200 leading-relaxed"
+              >
+                {isStreaming ? (
+                  <code>{seg.code}</code>
+                ) : (
+                  <code>
+                    {seg.code.split('\n').map((line, lIdx) => (
+                      <span key={lIdx} className="block">
+                        {renderHighlightedLine(line, seg.lang)}
+                      </span>
+                    ))}
+                  </code>
+                )}
               </pre>
             </div>
           );
@@ -460,10 +396,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, mes
 
         return (
           <div key={`${messageId}-md-${idx}`} className="space-y-2">
-            {renderMarkdownBlocks(part, `${messageId}-${idx}`)}
+            {renderMarkdownBlocks(seg.content, `${messageId}-${idx}`)}
           </div>
         );
       })}
     </div>
   );
 };
+
+export const MarkdownRenderer = React.memo(MarkdownRendererInner);

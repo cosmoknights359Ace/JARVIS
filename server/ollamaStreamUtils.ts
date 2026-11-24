@@ -44,3 +44,64 @@ export function consumeOllamaNdjson(
 
   return { events, remainder };
 }
+
+const OLLAMA_PARAM_SIZE_REGEX = /(?:^|[:\-_.\s])(\d+(?:\.\d+)?)b(?=$|[:\-_.\s])/i;
+
+/**
+ * Detects 7B, 8B, or larger local models from an Ollama tag name.
+ */
+export function isHeavyOllamaModel(modelName: string): boolean {
+  if (typeof modelName !== 'string' || !modelName.trim()) return false;
+  const match = modelName.trim().match(OLLAMA_PARAM_SIZE_REGEX);
+  if (!match) return false;
+  const billions = parseFloat(match[1]);
+  return Number.isFinite(billions) && billions >= 7;
+}
+
+/**
+ * 4 GB VRAM guardrail: automatically caps Ollama `options.num_ctx` to 2048
+ * whenever a 7B, 8B, or larger model is selected, while preserving the
+ * requested context window (e.g., 4096) for 3B and smaller models.
+ */
+export function resolveOllamaNumCtx(modelName: string, defaultCtx = 4096): number {
+  const safeDefault = Number.isFinite(defaultCtx) && defaultCtx > 0 ? Math.round(defaultCtx) : 4096;
+  if (isHeavyOllamaModel(modelName)) {
+    return Math.min(safeDefault, 2048);
+  }
+  return safeDefault;
+}
+
+/**
+ * Selects the lightweight default 3B model to silently warm up on server boot.
+ * Never picks heavy >=7B, vision, or embedding models.
+ */
+export function pickWarmUpModel(
+  installedModels: string[],
+  preferredDefault = 'qwen2.5:3b'
+): string | null {
+  if (!Array.isArray(installedModels) || installedModels.length === 0) {
+    return null;
+  }
+
+  const normalized = installedModels.map((m) => String(m || '').trim()).filter(Boolean);
+  const prefLower = preferredDefault.trim().toLowerCase();
+
+  // 1. Exact or tag-prefix match on the preferred default 3B model
+  const exact = normalized.find((m) => m.toLowerCase() === prefLower);
+  if (exact) return exact;
+
+  const prefBase = prefLower.split(':')[0];
+  const baseMatch = normalized.find(
+    (m) => m.toLowerCase().startsWith(`${prefBase}:`) && !isHeavyOllamaModel(m)
+  );
+  if (baseMatch) return baseMatch;
+
+  // 2. Any installed non-heavy, non-vision, non-embedding chat model
+  const smallFallback = normalized.find(
+    (m) =>
+      !isHeavyOllamaModel(m) &&
+      !/vision|embed|minilm|nomic|bge|mxbai/i.test(m)
+  );
+  return smallFallback || null;
+}
+
