@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import collections
 import ctypes
 import inspect
@@ -560,6 +561,115 @@ def build_child_env(repo_root: Path, port: int, server_mode: str) -> Dict[str, s
     return env
 
 
+def _build_save_file_types(filename: str) -> Tuple[str, ...]:
+    """Returns native file-dialog filter strings matching the exported file extension."""
+    ext = Path(filename).suffix.lower()
+    mapping = {
+        ".docx": ("Word Document (*.docx)", "All files (*.*)"),
+        ".xlsx": ("Excel Workbook (*.xlsx)", "All files (*.*)"),
+        ".pptx": ("PowerPoint Presentation (*.pptx)", "All files (*.*)"),
+        ".md": ("Markdown Document (*.md)", "All files (*.*)"),
+        ".json": ("JSON File (*.json)", "All files (*.*)"),
+        ".pdf": ("PDF Document (*.pdf)", "All files (*.*)"),
+    }
+    return mapping.get(ext, ("All files (*.*)",))
+
+
+def _resolve_save_dialog_type(webview_mod: object) -> object:
+    """Resolves SAVE_DIALOG constant cleanly across pywebview 4.x, 5.x, and 6.x."""
+    file_dialog_enum = getattr(webview_mod, "FileDialog", None)
+    if file_dialog_enum is not None and hasattr(file_dialog_enum, "SAVE"):
+        return getattr(file_dialog_enum, "SAVE")
+    return getattr(webview_mod, "SAVE_DIALOG", 30)
+
+
+def _normalize_dialog_selection(selection: object) -> Optional[str]:
+    """Normalizes pywebview create_file_dialog return value (str | tuple | list | None)."""
+    if not selection:
+        return None
+    if isinstance(selection, (list, tuple)):
+        first = selection[0] if selection else None
+        return str(first).strip() if first else None
+    text = str(selection).strip()
+    return text or None
+
+
+class DesktopApi:
+    """
+    pywebview JS-to-Python bridge exposed as `window.pywebview.api`.
+    Provides reliable native file saving when WebView2 drops `blob:` downloads.
+    """
+
+    def __init__(self) -> None:
+        self._window: Optional[object] = None
+        self._webview: Optional[object] = None
+
+    def attach(self, window: object, webview_mod: object) -> None:
+        self._window = window
+        self._webview = webview_mod
+
+    def save_file(self, filename: str, base64_data: str) -> Dict[str, object]:
+        """Opens a native Save dialog, decodes base64_data, and writes bytes to disk."""
+        safe_name = Path(str(filename or "jarvis_export.bin")).name or "jarvis_export.bin"
+        webview_mod = self._webview
+        window = self._window
+
+        if window is None and webview_mod is not None:
+            windows = getattr(webview_mod, "windows", None)
+            if windows:
+                window = windows[0]
+
+        if window is None or webview_mod is None or not hasattr(window, "create_file_dialog"):
+            return {"ok": False, "error": "Desktop save dialog is unavailable."}
+
+        try:
+            payload = str(base64_data or "").strip()
+            if payload.startswith("data:") and "," in payload:
+                payload = payload.split(",", 1)[1]
+            raw_bytes = base64.b64decode(payload, validate=True)
+        except Exception as exc:
+            return {"ok": False, "error": f"Invalid file payload: {exc}"}
+
+        dialog_type = _resolve_save_dialog_type(webview_mod)
+        downloads_dir = Path.home() / "Downloads"
+        initial_dir = str(downloads_dir) if downloads_dir.is_dir() else str(Path.home())
+
+        dialog_kwargs: Dict[str, object] = {
+            "directory": initial_dir,
+            "save_filename": safe_name,
+            "file_types": _build_save_file_types(safe_name),
+        }
+
+        try:
+            sig = inspect.signature(window.create_file_dialog)
+            supported_kwargs = {k: v for k, v in dialog_kwargs.items() if k in sig.parameters}
+        except (TypeError, ValueError):
+            supported_kwargs = {"directory": initial_dir, "save_filename": safe_name}
+
+        try:
+            selection = window.create_file_dialog(dialog_type, **supported_kwargs)  # type: ignore[attr-defined]
+        except TypeError:
+            selection = window.create_file_dialog(dialog_type, save_filename=safe_name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            return {"ok": False, "error": f"Could not open save dialog: {exc}"}
+
+        saved_path_str = _normalize_dialog_selection(selection)
+        if not saved_path_str:
+            return {"ok": False, "cancelled": True}
+
+        target = Path(saved_path_str)
+        expected_suffix = Path(safe_name).suffix
+        if expected_suffix and not target.suffix:
+            target = target.with_suffix(expected_suffix)
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw_bytes)
+            return {"ok": True, "path": str(target)}
+        except OSError as exc:
+            return {"ok": False, "error": f"Failed to write file: {exc}"}
+
+
 def launch_desktop_window(
     url: str,
     debug: bool = False,
@@ -579,11 +689,15 @@ def launch_desktop_window(
         webview.settings["ALLOW_DOWNLOADS"] = True
 
     storage_dir = str(get_webview_storage_dir())
-    icon_path = REPO_ROOT / "assets" / "jarvis_circle.png"
+    ico_candidate = REPO_ROOT / "assets" / "jarvis_circle.ico"
+    icon_path = ico_candidate if ico_candidate.is_file() else (REPO_ROOT / "assets" / "jarvis_circle.png")
+
+    desktop_api = DesktopApi()
 
     window_kwargs: Dict[str, object] = {
         "title": WINDOW_TITLE,
         "url": url,
+        "js_api": desktop_api,
         "width": 1360,
         "height": 860,
         "min_size": (960, 640),
@@ -594,6 +708,7 @@ def launch_desktop_window(
     cw_params = inspect.signature(webview.create_window).parameters
     filtered_window_kwargs = {k: v for k, v in window_kwargs.items() if k in cw_params}
     window = webview.create_window(**filtered_window_kwargs)
+    desktop_api.attach(window, webview)
 
     start_kwargs: Dict[str, object] = {
         "debug": debug,
@@ -602,7 +717,7 @@ def launch_desktop_window(
     }
     if gui:
         start_kwargs["gui"] = gui
-    if icon_path.is_file():
+    if icon_path.is_file() and (not IS_WINDOWS or icon_path.suffix.lower() == ".ico"):
         start_kwargs["icon"] = str(icon_path)
 
     start_params = inspect.signature(webview.start).parameters

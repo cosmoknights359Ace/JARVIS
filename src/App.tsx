@@ -26,6 +26,7 @@ import {
 import { SpeechService } from './services/speech';
 import { getShort, getSeal, verifyAttributionReport } from './services/attribution';
 import { sfx } from './services/soundEffects';
+import { saveBlobFile } from './utils/fileDownload';
 
 const DEFAULT_SETTINGS: JarvisSettings = {
   model: 'auto',
@@ -327,12 +328,7 @@ export const App: React.FC = () => {
       .join('\n---\n\n');
 
     const blob = new Blob([header + body], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `jarvis_chat_${Date.now()}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+    void saveBlobFile(blob, `jarvis_chat_${Date.now()}.md`).catch(() => {});
   }, [activeSession]);
 
   useEffect(() => {

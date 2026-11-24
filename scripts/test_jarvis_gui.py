@@ -180,6 +180,55 @@ class JarvisGuiLauncherTests(unittest.TestCase):
                 f"Port {port} should be free after ServerProcessManager.stop()",
             )
 
+    def test_desktop_api_save_file_writes_decoded_bytes_and_handles_cancel(self) -> None:
+        import base64
+        import types
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "filled_report.docx"
+            payload_bytes = b"PK\x03\x04test-docx-bytes"
+            b64 = base64.b64encode(payload_bytes).decode("ascii")
+
+            class FakeWindow:
+                def __init__(self, dialog_return: object) -> None:
+                    self.dialog_return = dialog_return
+                    self.last_call: object = None
+
+                def create_file_dialog(self, dialog_type: object, directory: str = "", save_filename: str = "", file_types: object = ()) -> object:
+                    self.last_call = (dialog_type, directory, save_filename, file_types)
+                    return self.dialog_return
+
+            fake_webview = types.SimpleNamespace(SAVE_DIALOG=30)
+
+            # 1. String return path (pywebview 5.x/6.x)
+            api = jarvis_gui.DesktopApi()
+            win = FakeWindow(str(out_file))
+            api.attach(win, fake_webview)
+            res = api.save_file("report_filled.docx", b64)
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["path"], str(out_file))
+            self.assertEqual(out_file.read_bytes(), payload_bytes)
+
+            # 2. Tuple return path
+            out_file2 = Path(tmp) / "deck.pptx"
+            win2 = FakeWindow((str(out_file2),))
+            api.attach(win2, fake_webview)
+            res2 = api.save_file("deck.pptx", b64)
+            self.assertTrue(res2["ok"])
+            self.assertEqual(out_file2.read_bytes(), payload_bytes)
+
+            # 3. Cancelled dialog
+            win_cancel = FakeWindow(None)
+            api.attach(win_cancel, fake_webview)
+            res_cancel = api.save_file("deck.pptx", b64)
+            self.assertFalse(res_cancel["ok"])
+            self.assertTrue(res_cancel.get("cancelled"))
+
+            # 4. Invalid base64 rejected cleanly
+            res_bad = api.save_file("deck.pptx", "!!!not-valid-base64!!!")
+            self.assertFalse(res_bad["ok"])
+            self.assertIn("Invalid file payload", str(res_bad.get("error", "")))
+
 
 if __name__ == "__main__":
     unittest.main()

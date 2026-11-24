@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Database, Plus, Trash2, Search, Download, Copy, Check } from 'lucide-react';
 import { MemoryStore } from '../types';
 import { sfx } from '../services/soundEffects';
+import { saveBlobFile } from '../utils/fileDownload';
 
 interface MemoryViewProps {
   memory: MemoryStore;
@@ -50,16 +51,15 @@ export const MemoryView: React.FC<MemoryViewProps> = ({
     setTimeout(() => setCopiedKey(null), 1500);
   };
 
-  const handleExportJSON = () => {
+  const handleExportJSON = async () => {
     const blob = new Blob([JSON.stringify(memory, null, 2)], {
       type: 'application/json'
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `jarvis_memory.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await saveBlobFile(blob, 'jarvis_memory.json');
+    } catch {
+      // ignore desktop save cancellation/errors
+    }
   };
 
   return (

@@ -35,6 +35,7 @@ import {
 } from '../types';
 import { sfx } from '../services/soundEffects';
 import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
+import { saveBlobFile } from '../utils/fileDownload';
 
 interface SlidesViewProps {
   settings: JarvisSettings;
@@ -601,18 +602,20 @@ export const SlidesView: React.FC<SlidesViewProps> = ({
       const fileName = nameMatch ? nameMatch[1] : 'jarvis_presentation.pptx';
 
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      URL.revokeObjectURL(url);
+      const outcome = await saveBlobFile(blob, fileName);
+      if (outcome.cancelled) {
+        setNoticeMsg('Export cancelled.');
+        return;
+      }
 
       sfx.playCommandConfirm();
+      const slideMeta = `${deck.slides.length} slides${
+        embeddedCount > 0 ? ` · ${embeddedCount} offline embedded ${embeddedCount === 1 ? 'image' : 'images'}` : ''
+      } · speaker notes included`;
       setNoticeMsg(
-        `Exported ${fileName} (${deck.slides.length} slides${
-          embeddedCount > 0 ? ` · ${embeddedCount} offline embedded ${embeddedCount === 1 ? 'image' : 'images'}` : ''
-        } · speaker notes included).`
+        outcome.path
+          ? `Saved to "${outcome.path}" (${slideMeta}).`
+          : `Exported ${fileName} (${slideMeta}).`
       );
     } catch (err: any) {
       setErrorMsg(err?.message || 'Export failed.');

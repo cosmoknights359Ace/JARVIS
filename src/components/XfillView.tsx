@@ -25,6 +25,7 @@ import {
 } from '../types';
 import { sfx } from '../services/soundEffects';
 import { buildStudioModelOptions, DEFAULT_STUDIO_MODEL } from '../utils/modelOptions';
+import { saveBlobFile } from '../utils/fileDownload';
 
 interface XfillViewProps {
   settings: JarvisSettings;
@@ -330,15 +331,18 @@ export const XfillView: React.FC<XfillViewProps> = ({
       const base = dotIdx > 0 ? doc.fileName.slice(0, dotIdx) : doc.fileName;
       const downloadName = `${base}_filled.${doc.fileType}`;
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = downloadName;
-      a.click();
-      URL.revokeObjectURL(url);
+      const outcome = await saveBlobFile(blob, downloadName);
+      if (outcome.cancelled) {
+        setStatusNotice('Export cancelled.');
+        return;
+      }
 
       sfx.playCommandConfirm();
-      setStatusNotice(`Exported "${downloadName}" with original formatting preserved.`);
+      setStatusNotice(
+        outcome.path
+          ? `Saved to "${outcome.path}" with original formatting preserved.`
+          : `Exported "${downloadName}" with original formatting preserved.`
+      );
     } catch (err: any) {
       setErrorMsg(err?.message || 'Could not export updated document.');
     } finally {
