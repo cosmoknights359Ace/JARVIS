@@ -1,4 +1,4 @@
-import { MemoryStore, JarvisSettings, ChatMessage, EngineProvider, SystemStats } from '../types';
+import { MemoryStore, JarvisSettings, ChatMessage, EngineProvider, SystemStats, WarmUpStatus } from '../types';
 import { getShort } from './attribution';
 
 export const CODING_KEYWORDS = [
@@ -294,12 +294,20 @@ export interface HealthProbeResult {
   activeProvider: EngineProvider;
   probeLatencyMs: number | null;
   serverUptimeSec: number | null;
+  warmUpStatus: WarmUpStatus;
+  warmUpModel: string | null;
   attributionVerified: boolean;
   attributionSeal: string;
   licenseFileIntact: boolean;
 }
 
 export type JarvisStreamEvent =
+  | {
+      type: 'status';
+      phase: 'loading_model';
+      provider: 'ollama' | 'gemini';
+      model: string;
+    }
   | {
       type: 'meta';
       provider: 'ollama' | 'gemini';
@@ -317,6 +325,7 @@ export type JarvisStreamEvent =
       ttftMs: number;
       elapsedMs: number;
       tokensPerSec: number;
+      doneReason?: string;
     }
   | {
       type: 'error';
@@ -386,6 +395,22 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
           ? 'gemini'
           : 'offline';
 
+      const rawWarmStatus = data?.warmUp?.status;
+      const warmUpStatus: WarmUpStatus =
+        rawWarmStatus === 'warming' ||
+        rawWarmStatus === 'ready' ||
+        rawWarmStatus === 'skipped' ||
+        rawWarmStatus === 'failed' ||
+        rawWarmStatus === 'idle'
+          ? rawWarmStatus
+          : reachable
+          ? 'ready'
+          : 'idle';
+      const warmUpModel =
+        typeof data?.warmUp?.model === 'string' && data.warmUp.model.trim()
+          ? data.warmUp.model.trim()
+          : null;
+
       return {
         reachable,
         models: Array.isArray(data?.models) ? data.models : [],
@@ -395,6 +420,8 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
           typeof data?.probeLatencyMs === 'number' ? data.probeLatencyMs : measuredMs,
         serverUptimeSec:
           typeof data?.serverUptimeSec === 'number' ? data.serverUptimeSec : null,
+        warmUpStatus,
+        warmUpModel,
         attributionVerified: data?.attribution?.verified !== false,
         attributionSeal:
           typeof data?.attribution?.seal === 'string' ? data.attribution.seal : 'ceff726d5d41618b',
@@ -411,6 +438,8 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
     activeProvider: 'offline',
     probeLatencyMs: null,
     serverUptimeSec: null,
+    warmUpStatus: 'idle',
+    warmUpModel: null,
     attributionVerified: true,
     attributionSeal: 'ceff726d5d41618b',
     licenseFileIntact: true
@@ -809,35 +838,90 @@ export async function* streamJarvisResponse(
     let accumulated = '';
     let sseBuffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
-      sseBuffer += decoder.decode(value, { stream: true });
-      const events = sseBuffer.split('\n\n');
-      sseBuffer = events.pop() || '';
+    try {
+      while (true) {
+        if (signal?.aborted) return;
+        const { done, value } = await reader.read();
+        if (done || signal?.aborted) break;
 
-      for (const evt of events) {
-        const lines = evt.split('\n');
-        for (const line of lines) {
+        sseBuffer += decoder.decode(value, { stream: true });
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop() || '';
+
+        for (const evt of events) {
+          if (signal?.aborted) return;
+          const lines = evt.split('\n');
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const dataStr = trimmed.slice(5).trim();
+            if (dataStr === '[DONE]') return;
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.error) {
+                yield { type: 'error', message: String(parsed.error) };
+                return;
+              }
+              if (parsed.status && parsed.status.phase === 'loading_model') {
+                yield {
+                  type: 'status',
+                  phase: 'loading_model',
+                  provider: parsed.status.provider === 'gemini' ? 'gemini' : 'ollama',
+                  model: String(parsed.status.model || modelName)
+                };
+              }
+              if (parsed.meta) {
+                yield {
+                  type: 'meta',
+                  provider: parsed.meta.provider,
+                  model: parsed.meta.model,
+                  ttftMs: Number(parsed.meta.ttftMs) || 0
+                };
+              }
+              if (typeof parsed.text === 'string' && parsed.text.length > 0) {
+                accumulated += parsed.text;
+                yield { type: 'text', content: accumulated };
+              }
+              if (parsed.stats) {
+                yield {
+                  type: 'stats',
+                  provider: parsed.stats.provider,
+                  model: parsed.stats.model,
+                  ttftMs: Number(parsed.stats.ttftMs) || 0,
+                  elapsedMs: Number(parsed.stats.elapsedMs) || 0,
+                  tokensPerSec: Number(parsed.stats.tokensPerSec) || 0,
+                  doneReason:
+                    typeof parsed.stats.doneReason === 'string'
+                      ? parsed.stats.doneReason
+                      : undefined
+                };
+              }
+            } catch {
+              // ignore malformed SSE chunk
+            }
+          }
+        }
+      }
+
+      if (signal?.aborted) return;
+
+      if (sseBuffer.trim()) {
+        for (const line of sseBuffer.split('\n')) {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
           const dataStr = trimmed.slice(5).trim();
-          if (dataStr === '[DONE]') return;
-
+          if (dataStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(dataStr);
             if (parsed.error) {
               yield { type: 'error', message: String(parsed.error) };
               return;
-            }
-            if (parsed.meta) {
-              yield {
-                type: 'meta',
-                provider: parsed.meta.provider,
-                model: parsed.meta.model,
-                ttftMs: Number(parsed.meta.ttftMs) || 0
-              };
             }
             if (typeof parsed.text === 'string' && parsed.text.length > 0) {
               accumulated += parsed.text;
@@ -850,46 +934,32 @@ export async function* streamJarvisResponse(
                 model: parsed.stats.model,
                 ttftMs: Number(parsed.stats.ttftMs) || 0,
                 elapsedMs: Number(parsed.stats.elapsedMs) || 0,
-                tokensPerSec: Number(parsed.stats.tokensPerSec) || 0
+                tokensPerSec: Number(parsed.stats.tokensPerSec) || 0,
+                doneReason:
+                  typeof parsed.stats.doneReason === 'string'
+                    ? parsed.stats.doneReason
+                    : undefined
               };
             }
           } catch {
-            // ignore malformed SSE chunk
+            // ignore trailing partial frame
           }
         }
       }
-    }
 
-    if (sseBuffer.trim()) {
-      for (const line of sseBuffer.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const dataStr = trimmed.slice(5).trim();
-        if (dataStr === '[DONE]') break;
-        try {
-          const parsed = JSON.parse(dataStr);
-          if (parsed.error) {
-            yield { type: 'error', message: String(parsed.error) };
-            return;
-          }
-          if (typeof parsed.text === 'string' && parsed.text.length > 0) {
-            accumulated += parsed.text;
-            yield { type: 'text', content: accumulated };
-          }
-        } catch {
-          // ignore trailing partial frame
-        }
+      if (signal?.aborted) return;
+
+      if (!accumulated.trim()) {
+        yield {
+          type: 'error',
+          message: 'No response was generated. Verify your local Ollama server or Gemini API key.'
+        };
       }
-    }
-
-    if (!accumulated.trim()) {
-      yield {
-        type: 'error',
-        message: 'No response was generated. Verify your local Ollama server or Gemini API key.'
-      };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   } catch (err: any) {
-    if (err?.name === 'AbortError') {
+    if (signal?.aborted || err?.name === 'AbortError') {
       return;
     }
     yield {

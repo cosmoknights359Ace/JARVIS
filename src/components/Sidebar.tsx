@@ -396,6 +396,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             </div>
 
+            {stats.warmUpStatus === 'warming' ? (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-500">VRAM</span>
+                  <span className="font-mono text-[10px] text-orange-400/90">Loading</span>
+                </div>
+                <div
+                  data-testid="diagnostics-warmup-status"
+                  className="inline-flex items-center gap-1.5 w-full px-2 py-1 rounded-lg bg-orange-500/12 border border-orange-500/35 font-mono text-[11px] text-orange-300"
+                  title={`Warming up ${stats.warmUpModel || 'local model'}...`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse shrink-0" />
+                  <span className="truncate">
+                    Warming up {stats.warmUpModel || 'model'}...
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-500">VRAM</span>
+                {stats.warmUpStatus === 'ready' || stats.activeProvider !== 'offline' ? (
+                  <span
+                    data-testid="diagnostics-warmup-status"
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 font-mono text-[11px] text-emerald-400"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    <span>Ready</span>
+                  </span>
+                ) : (
+                  <span
+                    data-testid="diagnostics-warmup-status"
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 font-mono text-[11px] text-zinc-500"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
+                    <span>Offline</span>
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-zinc-900">
               <span className="text-zinc-500">Probe Ping</span>
               <span className="font-mono text-zinc-300 tabular-nums">

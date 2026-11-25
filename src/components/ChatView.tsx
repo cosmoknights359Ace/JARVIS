@@ -20,7 +20,9 @@ import {
   ArrowDown,
   AlertTriangle,
   PanelRightClose,
-  PanelRightOpen
+  PanelRightOpen,
+  Loader2,
+  CornerDownRight
 } from 'lucide-react';
 import { ChatMessage, JarvisSettings, MemoryStore, SystemStats } from '../types';
 import { QUICK_SLASH_COMMANDS, QuickSlashCommand } from '../services/jarvisBrain';
@@ -36,6 +38,7 @@ interface ChatMessageItemProps {
   isStreamingMessage: boolean;
   isAnyStreaming: boolean;
   resolvedModel: string;
+  activeProvider: SystemStats['activeProvider'];
   isCopied: boolean;
   isSpeaking: boolean;
   isEditing: boolean;
@@ -47,7 +50,42 @@ interface ChatMessageItemProps {
   onCopy: (content: string, id: string) => void;
   onSpeak: (msg: ChatMessage) => void;
   onRegenerate: () => void;
+  onContinue: (messageId: string) => void;
 }
+
+const PreTtftModelLoader: React.FC<{
+  model: string;
+  provider?: 'ollama' | 'gemini' | 'command';
+  activeProvider: SystemStats['activeProvider'];
+}> = ({ model, provider, activeProvider }) => {
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  useEffect(() => {
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [model, provider]);
+
+  const isCloud = provider === 'gemini' || (!provider && activeProvider === 'gemini');
+  const statusLabel = isCloud
+    ? `Querying ${model}...`
+    : `Loading ${model} into VRAM...`;
+
+  return (
+    <div
+      data-testid="pre-ttft-loader"
+      className="flex flex-wrap items-center gap-2.5 text-xs text-zinc-300 font-mono"
+    >
+      <Loader2 size={14} className="text-orange-400 animate-spin shrink-0" />
+      <span>{statusLabel}</span>
+      {elapsedSec > 0 && (
+        <span className="text-zinc-500 tabular-nums">{elapsedSec}s</span>
+      )}
+    </div>
+  );
+};
 
 const ChatMessageItem = React.memo<ChatMessageItemProps>(
   ({
@@ -56,6 +94,7 @@ const ChatMessageItem = React.memo<ChatMessageItemProps>(
     isStreamingMessage,
     isAnyStreaming,
     resolvedModel,
+    activeProvider,
     isCopied,
     isSpeaking,
     isEditing,
@@ -66,7 +105,8 @@ const ChatMessageItem = React.memo<ChatMessageItemProps>(
     onStartEdit,
     onCopy,
     onSpeak,
-    onRegenerate
+    onRegenerate,
+    onContinue
   }) => {
     const isUser = m.role === 'user';
 
@@ -95,6 +135,12 @@ const ChatMessageItem = React.memo<ChatMessageItemProps>(
               <span className="font-mono tabular-nums text-zinc-400">
                 {m.tokensPerSec} tok/s
               </span>
+            </>
+          )}
+          {!isUser && m.stoppedByUser && !isStreamingMessage && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-orange-400/80">Stopped</span>
             </>
           )}
           <span aria-hidden="true">·</span>
@@ -169,10 +215,11 @@ const ChatMessageItem = React.memo<ChatMessageItemProps>(
               </button>
             </div>
           ) : !m.content && isStreamingMessage ? (
-            <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
-              <span className="inline-block w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
-              <span>Generating with {m.model || resolvedModel}...</span>
-            </div>
+            <PreTtftModelLoader
+              model={m.model || resolvedModel}
+              provider={m.provider}
+              activeProvider={activeProvider}
+            />
           ) : (
             <MarkdownRenderer
               content={m.content}
@@ -181,6 +228,22 @@ const ChatMessageItem = React.memo<ChatMessageItemProps>(
             />
           )}
         </div>
+
+        {/* Continue Generating Button when Truncated by Length */}
+        {!isUser && !m.isError && !isStreamingMessage && m.doneReason === 'length' && (
+          <div className="mt-2 px-1">
+            <button
+              type="button"
+              onClick={() => onContinue(m.id)}
+              disabled={isAnyStreaming}
+              className="px-3 py-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/35 hover:border-orange-500/60 disabled:opacity-40 text-orange-300 text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+              title="Continue generating from where the model left off"
+            >
+              <CornerDownRight size={13} />
+              <span>Continue generating</span>
+            </button>
+          </div>
+        )}
 
         {/* Per-Message Action Bar */}
         {!isEditing && m.content && (
@@ -267,6 +330,7 @@ interface ChatViewProps {
   onSendMessage: (text: string) => void;
   onStopStreaming: () => void;
   onRegenerate: () => void;
+  onContinueMessage: (messageId: string) => void;
   onEditMessage: (messageId: string, newText: string) => void;
   onExportChat: () => void;
   onClearScreen: () => void;
@@ -289,6 +353,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSendMessage,
   onStopStreaming,
   onRegenerate,
+  onContinueMessage,
   onEditMessage,
   onExportChat,
   onClearScreen,
@@ -773,10 +838,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 id="stopBtn"
                 onClick={onStopStreaming}
-                title="Abort active generation"
-                className="px-3.5 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0 whitespace-nowrap"
+                title="Stop generating"
+                aria-label="Stop generating"
+                className="px-3.5 py-1.5 rounded-lg bg-[#070709] hover:bg-orange-500/15 border border-orange-500 text-orange-400 hover:text-orange-300 font-semibold text-xs flex items-center gap-1.5 transition-colors shrink-0 whitespace-nowrap shadow-[0_0_12px_rgba(249,115,22,0.18)]"
               >
-                <Square size={12} className="fill-current" />
+                <Square size={11} className="fill-current" />
                 <span>Stop</span>
               </button>
             ) : (
@@ -796,9 +862,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
-      {/* Minimal Single-Line Keyboard Hint */}
-      <div className="flex items-center justify-center px-1 text-[11px] text-zinc-500">
+      {/* Single-Line Keyboard Hint + Live Warm-Up Status Pill */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-zinc-500">
         <span>Enter to send · Shift+Enter for new line</span>
+        {stats.warmUpStatus === 'warming' ? (
+          <span
+            data-testid="chat-footer-warmup-status"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-orange-500/10 border border-orange-500/30 font-mono text-[11px] text-orange-300"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse shrink-0" />
+            <span>Warming up {stats.warmUpModel || settings.generalModel}...</span>
+          </span>
+        ) : stats.warmUpStatus === 'ready' || stats.activeProvider !== 'offline' ? (
+          <span
+            data-testid="chat-footer-warmup-status"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 font-mono text-[11px] text-emerald-400"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+            <span>Ready</span>
+          </span>
+        ) : (
+          <span
+            data-testid="chat-footer-warmup-status"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 font-mono text-[11px] text-zinc-500"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
+            <span>Offline</span>
+          </span>
+        )}
       </div>
     </div>
   );
@@ -880,6 +971,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       isStreamingMessage={isStreaming && isLatestAssist}
                       isAnyStreaming={isStreaming}
                       resolvedModel={stats.resolvedModel}
+                      activeProvider={stats.activeProvider}
                       isCopied={copiedMsgId === m.id}
                       isSpeaking={speakingMsgId === m.id}
                       isEditing={isEditingThis}
@@ -891,6 +983,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onCopy={handleCopyMessage}
                       onSpeak={handleSpeakMessage}
                       onRegenerate={onRegenerate}
+                      onContinue={onContinueMessage}
                     />
                   );
                 })}

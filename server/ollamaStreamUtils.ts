@@ -10,6 +10,7 @@
 export interface OllamaNdjsonChunk {
   text?: string;
   done?: boolean;
+  doneReason?: string;
   error?: string;
 }
 
@@ -34,8 +35,16 @@ export function consumeOllamaNdjson(
       const text =
         typeof parsed?.message?.content === 'string' ? parsed.message.content : undefined;
       const done = Boolean(parsed?.done);
-      if (text || done) {
-        events.push({ text, done });
+      const doneReason =
+        typeof parsed?.done_reason === 'string' && parsed.done_reason.trim()
+          ? parsed.done_reason.trim()
+          : undefined;
+      if (text || done || doneReason) {
+        const chunk: OllamaNdjsonChunk = { text, done };
+        if (doneReason) {
+          chunk.doneReason = doneReason;
+        }
+        events.push(chunk);
       }
     } catch {
       // Ignore malformed/corrupt single line without stalling the stream
@@ -59,16 +68,31 @@ export function isHeavyOllamaModel(modelName: string): boolean {
 }
 
 /**
- * 4 GB VRAM guardrail: automatically caps Ollama `options.num_ctx` to 2048
- * whenever a 7B, 8B, or larger model is selected, while preserving the
- * requested context window (e.g., 4096) for 3B and smaller models.
+ * VRAM guardrail for Ollama `options.num_ctx`:
+ * - Caps 7B, 8B, or larger models to `heavyCap` (default 2048 for studio engines;
+ *   chat passes 3072 via `resolveChatOllamaNumCtx`) while preserving `defaultCtx`
+ *   (e.g., 4096) for 3B and smaller models.
  */
-export function resolveOllamaNumCtx(modelName: string, defaultCtx = 4096): number {
+export function resolveOllamaNumCtx(
+  modelName: string,
+  defaultCtx = 4096,
+  heavyCap = 2048
+): number {
   const safeDefault = Number.isFinite(defaultCtx) && defaultCtx > 0 ? Math.round(defaultCtx) : 4096;
+  const safeHeavyCap = Number.isFinite(heavyCap) && heavyCap > 0 ? Math.round(heavyCap) : 2048;
   if (isHeavyOllamaModel(modelName)) {
-    return Math.min(safeDefault, 2048);
+    return Math.min(safeDefault, safeHeavyCap);
   }
   return safeDefault;
+}
+
+/**
+ * Chat-specific context window tuning:
+ * - 3072 tokens for 7B/8B+ models (prevents mid-sentence cutoffs on long code + explanation)
+ * - 4096 tokens for 3B and smaller models
+ */
+export function resolveChatOllamaNumCtx(modelName: string): number {
+  return resolveOllamaNumCtx(modelName, 4096, 3072);
 }
 
 /**

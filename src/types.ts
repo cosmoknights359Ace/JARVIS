@@ -4,6 +4,8 @@ export type MessageRole = 'user' | 'assist' | 'system' | 'boot';
 
 export type EngineProvider = 'ollama' | 'gemini' | 'offline';
 
+export type WarmUpStatus = 'idle' | 'warming' | 'ready' | 'skipped' | 'failed';
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -14,6 +16,8 @@ export interface ChatMessage {
   ttftMs?: number;
   tokensPerSec?: number;
   elapsedMs?: number;
+  doneReason?: string;
+  stoppedByUser?: boolean;
   isError?: boolean;
 }
 
@@ -40,6 +44,8 @@ export interface SystemStats {
   serverUptimeSec: number | null;
   resolvedModel: string;
   installedModels: string[];
+  warmUpStatus: WarmUpStatus;
+  warmUpModel: string | null;
   attributionVerified: boolean;
   attributionSeal: string;
   licenseFileIntact: boolean;

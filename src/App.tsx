@@ -144,6 +144,8 @@ export const App: React.FC = () => {
     serverUptimeSec: null,
     resolvedModel: settings.model === 'auto' ? settings.generalModel : settings.model,
     installedModels: [],
+    warmUpStatus: 'idle',
+    warmUpModel: null,
     attributionVerified: clientAttributionOk,
     attributionSeal: getSeal(),
     licenseFileIntact: true
@@ -151,6 +153,7 @@ export const App: React.FC = () => {
 
   const routerRef = useRef(new JarvisRouter());
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeStreamTargetRef = useRef<{ sessionId: string; messageId: string } | null>(null);
   const streamPendingRef = useRef<{
     sessionId: string;
     messageId: string;
@@ -249,6 +252,8 @@ export const App: React.FC = () => {
       probeLatencyMs: res.probeLatencyMs,
       serverUptimeSec: res.serverUptimeSec,
       installedModels: res.models,
+      warmUpStatus: res.warmUpStatus,
+      warmUpModel: res.warmUpModel,
       attributionVerified: localOk && res.attributionVerified,
       attributionSeal: res.attributionSeal || getSeal(),
       licenseFileIntact: res.licenseFileIntact
@@ -257,9 +262,13 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     checkOllamaHealth();
-    const interval = setInterval(checkOllamaHealth, 15000);
-    return () => clearInterval(interval);
   }, [checkOllamaHealth]);
+
+  useEffect(() => {
+    const pollMs = stats.warmUpStatus === 'warming' ? 2000 : 15000;
+    const interval = setInterval(checkOllamaHealth, pollMs);
+    return () => clearInterval(interval);
+  }, [checkOllamaHealth, stats.warmUpStatus]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -285,11 +294,42 @@ export const App: React.FC = () => {
   }, [resolvedModel]);
 
   const abortActiveStream = useCallback(() => {
+    const target = activeStreamTargetRef.current;
+    const pendingContent =
+      streamPendingRef.current && target && streamPendingRef.current.messageId === target.messageId
+        ? streamPendingRef.current.content
+        : null;
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     flushStreamBuffer();
+
+    if (target) {
+      activeStreamTargetRef.current = null;
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === target.sessionId
+            ? {
+                ...s,
+                updatedAt: new Date().toISOString(),
+                messages: s.messages.map((m) => {
+                  if (m.id !== target.messageId) return m;
+                  const preserved = pendingContent !== null ? pendingContent : m.content;
+                  return {
+                    ...m,
+                    content: preserved.trim() ? preserved : 'Generation stopped.',
+                    isError: false,
+                    stoppedByUser: true
+                  };
+                })
+              }
+            : s
+        )
+      );
+    }
+
     setIsStreaming(false);
   }, [flushStreamBuffer]);
 
@@ -529,6 +569,7 @@ export const App: React.FC = () => {
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    activeStreamTargetRef.current = { sessionId: targetSessionId, messageId: assistMsgId };
     setIsStreaming(true);
 
     try {
@@ -547,7 +588,22 @@ export const App: React.FC = () => {
       for await (const evt of stream) {
         if (controller.signal.aborted) break;
 
-        if (evt.type === 'meta') {
+        if (evt.type === 'status') {
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.id === assistMsgId
+                        ? { ...m, model: evt.model, provider: evt.provider }
+                        : m
+                    )
+                  }
+                : s
+            )
+          );
+        } else if (evt.type === 'meta') {
           setStats((prev) => ({
             ...prev,
             activeProvider: evt.provider,
@@ -594,7 +650,8 @@ export const App: React.FC = () => {
                             provider: evt.provider,
                             ttftMs: evt.ttftMs,
                             elapsedMs: evt.elapsedMs,
-                            tokensPerSec: evt.tokensPerSec
+                            tokensPerSec: evt.tokensPerSec,
+                            doneReason: evt.doneReason
                           }
                         : m
                     )
@@ -637,12 +694,17 @@ export const App: React.FC = () => {
           pitch: settings.voicePitch
         });
       }
-    } catch (err) {
-      console.error('Inference error:', err);
+    } catch (err: any) {
+      if (!controller.signal.aborted && err?.name !== 'AbortError') {
+        console.error('Inference error:', err);
+      }
     } finally {
       flushStreamBuffer();
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
+      }
+      if (activeStreamTargetRef.current?.messageId === assistMsgId) {
+        activeStreamTargetRef.current = null;
       }
       setIsStreaming(false);
     }
@@ -651,6 +713,18 @@ export const App: React.FC = () => {
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;
     await executePromptOnSession(activeSession.id, text, activeSession.messages);
+  };
+
+  const handleContinueMessage = async (messageId: string) => {
+    if (isStreaming) return;
+    const updatedPrior = activeSession.messages.map((m) =>
+      m.id === messageId ? { ...m, doneReason: undefined } : m
+    );
+    await executePromptOnSession(
+      activeSession.id,
+      'Continue generating from exactly where you left off without repeating earlier text.',
+      updatedPrior
+    );
   };
 
   const handleRegenerate = async () => {
@@ -741,6 +815,7 @@ export const App: React.FC = () => {
               onSendMessage={handleSendMessage}
               onStopStreaming={handleStopStreaming}
               onRegenerate={handleRegenerate}
+              onContinueMessage={handleContinueMessage}
               onEditMessage={handleEditMessage}
               onExportChat={handleExportChat}
               onClearScreen={handleClearScreen}

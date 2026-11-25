@@ -21,6 +21,7 @@ import { resolveAvailableOllamaModel } from './server/localJsonUtils.ts';
 import {
   consumeOllamaNdjson,
   pickWarmUpModel,
+  resolveChatOllamaNumCtx,
   resolveOllamaNumCtx
 } from './server/ollamaStreamUtils.ts';
 
@@ -115,26 +116,69 @@ async function checkLocalOllamaServer(
   }
 }
 
+type WarmUpPhase = 'idle' | 'warming' | 'ready' | 'skipped' | 'failed';
+
+interface WarmUpState {
+  status: WarmUpPhase;
+  model: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+}
+
+let warmUpState: WarmUpState = {
+  status: 'idle',
+  model: null,
+  startedAt: null,
+  completedAt: null
+};
+
 /**
  * Silent, non-blocking background warm-up for local Ollama on server startup.
  * Loads the default 3B model into memory (keep_alive: "30m", empty prompt) so
- * the user's first chat message avoids a ~25-30s cold-start delay.
+ * the user's first chat message avoids a ~25-30s cold-start delay, while
+ * tracking live warm-up status for Engine Diagnostics and the chat footer.
  */
 async function warmUpLocalOllama(host = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434'): Promise<void> {
+  if (warmUpState.status === 'warming') return;
+
   const cleanHost = (host || 'http://127.0.0.1:11434')
     .replace(/\/+$/, '')
     .replace('localhost', '127.0.0.1');
 
   const status = await checkLocalOllamaServer(cleanHost);
-  if (!status.reachable) return;
+  if (!status.reachable) {
+    warmUpState = {
+      status: 'skipped',
+      model: null,
+      startedAt: null,
+      completedAt: Date.now()
+    };
+    return;
+  }
 
   const targetModel = pickWarmUpModel(status.models, 'qwen2.5:3b');
-  if (!targetModel) return;
+  if (!targetModel) {
+    warmUpState = {
+      status: 'ready',
+      model: null,
+      startedAt: null,
+      completedAt: Date.now()
+    };
+    return;
+  }
+
+  const startedAt = Date.now();
+  warmUpState = {
+    status: 'warming',
+    model: targetModel,
+    startedAt,
+    completedAt: null
+  };
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 35000);
   try {
-    await fetch(`${cleanHost}/api/generate`, {
+    const res = await fetch(`${cleanHost}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -148,8 +192,19 @@ async function warmUpLocalOllama(host = process.env.OLLAMA_HOST || 'http://127.0
       }),
       signal: controller.signal
     });
+    warmUpState = {
+      status: res.ok ? 'ready' : 'failed',
+      model: targetModel,
+      startedAt,
+      completedAt: Date.now()
+    };
   } catch {
-    // Non-blocking best-effort warm-up: ignore offline or busy errors silently
+    warmUpState = {
+      status: 'failed',
+      model: targetModel,
+      startedAt,
+      completedAt: Date.now()
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -171,6 +226,9 @@ async function startServer() {
     const reqStart = Date.now();
     const host = typeof req.query.host === 'string' ? req.query.host : 'http://127.0.0.1:11434';
     const ollamaStatus = await checkLocalOllamaServer(host);
+    if (ollamaStatus.reachable && (warmUpState.status === 'skipped' || warmUpState.status === 'idle')) {
+      void warmUpLocalOllama(host);
+    }
     const geminiAvailable = Boolean(process.env.GEMINI_API_KEY);
     const activeProvider = ollamaStatus.reachable
       ? 'ollama'
@@ -186,6 +244,7 @@ async function startServer() {
       activeProvider,
       probeLatencyMs: ollamaStatus.reachable ? ollamaStatus.latencyMs : Math.max(1, Date.now() - reqStart),
       serverUptimeSec: Math.floor((Date.now() - SERVER_STARTED_AT) / 1000),
+      warmUp: warmUpState,
       attribution
     });
   });
@@ -256,9 +315,16 @@ async function startServer() {
           'qwen2.5:3b'
         );
 
-        // Immediately send SSE comment so proxies/browsers keep the connection alive while 7B loads
+        // Immediately notify client which model is loading/swapping into VRAM and keep SSE alive
         if (!res.writableEnded) {
           res.write(': ollama-stream-init\n\n');
+          writeEvent({
+            status: {
+              phase: 'loading_model',
+              provider: 'ollama',
+              model: effectiveModel
+            }
+          });
         }
 
         const ollamaAbort = new AbortController();
@@ -307,8 +373,8 @@ async function startServer() {
               keep_alive: `${keepAliveMinutes}m`,
               options: {
                 temperature: Number(temperature) || 0.7,
-                num_ctx: resolveOllamaNumCtx(effectiveModel, 4096),
-                num_predict: Number(maxTokens) || 1024
+                num_ctx: resolveChatOllamaNumCtx(effectiveModel),
+                num_predict: -1
               }
             }),
             signal: ollamaAbort.signal
@@ -341,6 +407,7 @@ async function startServer() {
             let ttftMs: number | null = null;
             let totalChars = 0;
             let streamDone = false;
+            let doneReason: string | undefined;
             let ollamaErr: string | null = null;
 
             while (!clientClosed && !streamDone) {
@@ -373,6 +440,9 @@ async function startServer() {
                   totalChars += evt.text.length;
                   writeEvent({ text: evt.text });
                 }
+                if (evt.doneReason) {
+                  doneReason = evt.doneReason;
+                }
                 if (evt.done) {
                   streamDone = true;
                   break;
@@ -386,16 +456,21 @@ async function startServer() {
               for (const evt of events) {
                 if (evt.error) {
                   ollamaErr = evt.error;
-                } else if (evt.text) {
-                  if (!hasOutput) {
-                    hasOutput = true;
-                    ttftMs = Math.max(1, Date.now() - requestStart);
-                    writeEvent({
-                      meta: { provider: 'ollama', model: effectiveModel, ttftMs }
-                    });
+                } else {
+                  if (evt.text) {
+                    if (!hasOutput) {
+                      hasOutput = true;
+                      ttftMs = Math.max(1, Date.now() - requestStart);
+                      writeEvent({
+                        meta: { provider: 'ollama', model: effectiveModel, ttftMs }
+                      });
+                    }
+                    totalChars += evt.text.length;
+                    writeEvent({ text: evt.text });
                   }
-                  totalChars += evt.text.length;
-                  writeEvent({ text: evt.text });
+                  if (evt.doneReason) {
+                    doneReason = evt.doneReason;
+                  }
                 }
               }
             }
@@ -422,7 +497,8 @@ async function startServer() {
                   model: effectiveModel,
                   ttftMs: ttftMs ?? elapsedMs,
                   elapsedMs,
-                  tokensPerSec
+                  tokensPerSec,
+                  doneReason: doneReason || 'stop'
                 }
               });
               endStream();
@@ -472,6 +548,14 @@ async function startServer() {
         parts: [{ text: prompt }]
       });
 
+      writeEvent({
+        status: {
+          phase: 'loading_model',
+          provider: 'gemini',
+          model: GEMINI_DEFAULT_MODEL
+        }
+      });
+
       const geminiStart = Date.now();
       const responseStream = await ai.models.generateContentStream({
         model: GEMINI_DEFAULT_MODEL,
@@ -485,10 +569,15 @@ async function startServer() {
 
       let ttftMs: number | null = null;
       let totalChars = 0;
+      let geminiDoneReason = 'stop';
 
       for await (const chunk of responseStream) {
         if (clientClosed) break;
         const c = chunk as GenerateContentResponse;
+        const finishReason = c.candidates?.[0]?.finishReason;
+        if (typeof finishReason === 'string' && finishReason.toUpperCase().includes('MAX_TOKENS')) {
+          geminiDoneReason = 'length';
+        }
         const text = c.text;
         if (text) {
           if (ttftMs === null) {
@@ -517,7 +606,8 @@ async function startServer() {
           model: GEMINI_DEFAULT_MODEL,
           ttftMs: ttftMs ?? elapsedMs,
           elapsedMs,
-          tokensPerSec
+          tokensPerSec,
+          doneReason: geminiDoneReason
         }
       });
 
