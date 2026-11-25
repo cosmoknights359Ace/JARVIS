@@ -685,12 +685,17 @@ def launch_desktop_window(
             "    pip install pywebview\n"
         ) from exc
 
+    if IS_WINDOWS:
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("cosmoknight.jarvis.desktop")
+        except Exception:
+            pass
+
     if hasattr(webview, "settings") and isinstance(webview.settings, dict):
         webview.settings["ALLOW_DOWNLOADS"] = True
 
     storage_dir = str(get_webview_storage_dir())
-    ico_candidate = REPO_ROOT / "assets" / "jarvis_circle.ico"
-    icon_path = ico_candidate if ico_candidate.is_file() else (REPO_ROOT / "assets" / "jarvis_circle.png")
+    icon_path = REPO_ROOT / "assets" / ("jarvis_circle.ico" if IS_WINDOWS else "jarvis_circle.png")
 
     desktop_api = DesktopApi()
 
