@@ -1,3 +1,10 @@
+import {
+  getModelFitBadge,
+  HardwareProfile,
+  ModelFitBadge,
+  parseModelParamsB
+} from './hardwareTier';
+
 export const DEFAULT_STUDIO_MODEL = 'vai-doc:latest';
 
 /**
@@ -34,32 +41,52 @@ export function buildStudioModelOptions(params: {
   return result;
 }
 
-const MODEL_PARAM_SIZE_REGEX = /(?:^|[:\-_.\s])(\d+(?:\.\d+)?)b(?=$|[:\-_.\s])/i;
-
 /**
- * Returns true when an Ollama model tag specifies >= 7B parameters
- * (e.g., qwen2.5-coder:7b, llama3.1:8b, qwen2.5:14b) so UI dropdowns can
- * label them as "Heavy" on 4 GB VRAM systems.
+ * Returns true when a model is classified as Heavy or Too Heavy for the given
+ * hardware profile (defaults to Entry GPU when hardware is omitted).
  */
-export function isHeavyModelName(modelName: string): boolean {
-  if (typeof modelName !== 'string' || !modelName.trim()) return false;
-  const match = modelName.trim().match(MODEL_PARAM_SIZE_REGEX);
-  if (!match) return false;
-  const billions = parseFloat(match[1]);
-  return Number.isFinite(billions) && billions >= 7;
+export function isHeavyModelName(
+  modelName: string,
+  hardware?: Pick<HardwareProfile, 'vramGb' | 'tier'> | null
+): boolean {
+  if (!hardware) {
+    const billions = parseModelParamsB(modelName);
+    return billions !== null && billions >= 7;
+  }
+  const badge = getModelFitBadge(modelName, hardware);
+  return badge === 'Heavy' || badge === 'Too Heavy';
 }
 
 /**
- * Formats a model identifier for <select> option labels, appending a subtle
- * "(Heavy)" indicator for 7B+ models.
+ * Returns the dynamic fit badge (`Optimal`, `Heavy`, or `Too Heavy`) for a model
+ * on the user's detected hardware tier.
  */
-export function formatModelOptionLabel(modelName: string, resolvedForAuto?: string): string {
+export function getModelOptionBadge(
+  modelName: string,
+  hardware?: Pick<HardwareProfile, 'vramGb' | 'tier'> | null
+): ModelFitBadge {
+  return getModelFitBadge(modelName, hardware);
+}
+
+/**
+ * Formats a model identifier for <select> option labels, dynamically tagging
+ * each model with `(Optimal)`, `(Heavy)`, or `(Too Heavy)` based on the user's
+ * detected hardware tier.
+ */
+export function formatModelOptionLabel(
+  modelName: string,
+  resolvedForAuto?: string,
+  hardware?: Pick<HardwareProfile, 'vramGb' | 'tier'> | null
+): string {
   const clean = (modelName || '').trim();
   if (!clean) return '';
   if (clean === 'auto') {
     if (!resolvedForAuto) return 'auto';
-    return `auto (${formatModelOptionLabel(resolvedForAuto)})`;
+    const resolvedClean = resolvedForAuto.trim();
+    const badge = getModelFitBadge(resolvedClean, hardware);
+    return `auto (${resolvedClean} · ${badge})`;
   }
-  return isHeavyModelName(clean) ? `${clean} (Heavy)` : clean;
+  const badge = getModelFitBadge(clean, hardware);
+  return `${clean} (${badge})`;
 }
 

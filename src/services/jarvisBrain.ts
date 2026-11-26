@@ -1,5 +1,14 @@
-import { MemoryStore, JarvisSettings, ChatMessage, EngineProvider, SystemStats, WarmUpStatus } from '../types';
+import {
+  MemoryStore,
+  JarvisSettings,
+  ChatMessage,
+  EngineProvider,
+  SystemStats,
+  WarmUpStatus,
+  HardwareProfile
+} from '../types';
 import { getShort } from './attribution';
+import { formatHardwareReadout, selectBestModelForTier } from '../utils/hardwareTier';
 
 export const CODING_KEYWORDS = [
   'code', 'python', 'java', 'c++', 'javascript', 'typescript', 'html', 'css',
@@ -336,7 +345,13 @@ export class JarvisRouter {
   private stickyCount = 0;
   private stickyModel: string | null = null;
 
-  public resolve(prompt: string, selectedModel: string, settings: JarvisSettings): string {
+  public resolve(
+    prompt: string,
+    selectedModel: string,
+    settings: JarvisSettings,
+    installedModels?: string[],
+    hardware?: HardwareProfile | null
+  ): string {
     if (selectedModel !== 'auto') {
       return selectedModel;
     }
@@ -347,8 +362,19 @@ export class JarvisRouter {
       return regex.test(lower);
     });
 
+    const hasLocalInventory = Array.isArray(installedModels) && installedModels.length > 0;
+
     if (isCoding) {
-      this.stickyModel = settings.codingModel || 'qwen2.5-coder:7b';
+      const tierCoder =
+        hasLocalInventory && hardware
+          ? selectBestModelForTier(installedModels, {
+              hardware,
+              preferCoding: true,
+              preferredDefault: settings.codingModel,
+              allowUnfitFallback: true
+            })
+          : null;
+      this.stickyModel = tierCoder || settings.codingModel || 'qwen2.5-coder:7b';
       this.stickyCount = 3;
       return this.stickyModel;
     }
@@ -359,8 +385,47 @@ export class JarvisRouter {
     }
 
     this.stickyModel = null;
+    if (hasLocalInventory && hardware) {
+      const tierGeneral = selectBestModelForTier(installedModels, {
+        hardware,
+        preferCoding: false,
+        preferredDefault: settings.generalModel,
+        allowUnfitFallback: true
+      });
+      if (tierGeneral) {
+        return tierGeneral;
+      }
+    }
     return settings.generalModel || 'qwen2.5:3b';
   }
+}
+
+export async function fetchSystemHardware(): Promise<HardwareProfile | null> {
+  try {
+    const res = await fetch('/api/system/hardware');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (
+      typeof data?.gpuName === 'string' &&
+      typeof data?.vramGb === 'number' &&
+      typeof data?.systemRamGb === 'number' &&
+      typeof data?.tier === 'string' &&
+      typeof data?.recommendedMaxParamsB === 'number' &&
+      typeof data?.defaultCtx === 'number'
+    ) {
+      return {
+        gpuName: data.gpuName,
+        vramGb: data.vramGb,
+        systemRamGb: data.systemRamGb,
+        tier: data.tier,
+        recommendedMaxParamsB: data.recommendedMaxParamsB,
+        defaultCtx: data.defaultCtx
+      };
+    }
+  } catch {
+    // Hardware endpoint unreachable
+  }
+  return null;
 }
 
 export function buildSystemPrompt(memory: MemoryStore): string {
@@ -713,10 +778,14 @@ export function handleCommand(
         ? `TTFT ${stats.lastTtftMs} ms · ${stats.lastTokensPerSec} tok/s`
         : 'No turns completed yet';
 
+    const hardwareRow = stats.hardware
+      ? `| Hardware | \`${formatHardwareReadout(stats.hardware, { compact: true })}\` |\n`
+      : '';
+
     return {
       handled: true,
       type: 'chat',
-      text: `### Engine Diagnostics\n\n| Metric | Value |\n| --- | --- |\n| Active Provider | **${providerLabel}** |\n| Preferred Route | \`${stats.resolvedModel}\` |\n| Probe Latency | \`${probeText}\` |\n| Last Inference | \`${lastPerfText}\` |\n| Memory Records | \`${Object.keys(memory).length} entries\` |\n| Attribution | ${getShort()} |`,
+      text: `### Engine Diagnostics\n\n| Metric | Value |\n| --- | --- |\n| Active Provider | **${providerLabel}** |\n${hardwareRow}| Preferred Route | \`${stats.resolvedModel}\` |\n| Probe Latency | \`${probeText}\` |\n| Last Inference | \`${lastPerfText}\` |\n| Memory Records | \`${Object.keys(memory).length} entries\` |\n| Attribution | ${getShort()} |`,
       speakText:
         stats.activeProvider === 'ollama'
           ? 'Local Ollama engine is connected and nominal.'

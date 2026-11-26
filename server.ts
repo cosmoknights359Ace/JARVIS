@@ -21,9 +21,16 @@ import { resolveAvailableOllamaModel } from './server/localJsonUtils.ts';
 import {
   consumeOllamaNdjson,
   pickWarmUpModel,
-  resolveChatOllamaNumCtx,
-  resolveOllamaNumCtx
+  resolveChatOllamaNumCtx
 } from './server/ollamaStreamUtils.ts';
+import {
+  initHardwareProfile,
+  getCachedHardwareProfile
+} from './server/hardwareProbe.ts';
+import {
+  formatHardwareReadout,
+  selectBestModelForTier
+} from './src/utils/hardwareTier.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -156,7 +163,8 @@ async function warmUpLocalOllama(host = process.env.OLLAMA_HOST || 'http://127.0
     return;
   }
 
-  const targetModel = pickWarmUpModel(status.models, 'qwen2.5:3b');
+  const hardware = await initHardwareProfile();
+  const targetModel = pickWarmUpModel(status.models, 'qwen2.5:3b', hardware);
   if (!targetModel) {
     warmUpState = {
       status: 'ready',
@@ -187,7 +195,7 @@ async function warmUpLocalOllama(host = process.env.OLLAMA_HOST || 'http://127.0
         stream: false,
         keep_alive: '30m',
         options: {
-          num_ctx: resolveOllamaNumCtx(targetModel, 4096)
+          num_ctx: resolveChatOllamaNumCtx(targetModel, hardware)
         }
       }),
       signal: controller.signal
@@ -219,6 +227,19 @@ async function startServer() {
     res.setHeader('X-Creator-Attribution', CREATOR_ATTRIBUTION_HEADER);
     res.setHeader('X-Copyright-Seal', EXPECTED_COPYRIGHT_SEAL);
     next();
+  });
+
+  // One-time cached surface-level hardware profile & adaptive VRAM tier
+  app.get('/api/system/hardware', async (_req, res) => {
+    const profile = await initHardwareProfile();
+    res.json({
+      gpuName: profile.gpuName,
+      vramGb: profile.vramGb,
+      systemRamGb: profile.systemRamGb,
+      tier: profile.tier,
+      recommendedMaxParamsB: profile.recommendedMaxParamsB,
+      defaultCtx: profile.defaultCtx
+    });
   });
 
   // Real Server-Side Health, Provider, Latency & Copyright Integrity Endpoint
@@ -309,8 +330,17 @@ async function startServer() {
 
       const ollamaProbe = await checkLocalOllamaServer(cleanHost);
       if (ollamaProbe.reachable && !clientClosed) {
+        const hardware = getCachedHardwareProfile();
+        const requestedModel =
+          typeof modelName === 'string' && modelName.trim().toLowerCase() === 'auto'
+            ? selectBestModelForTier(ollamaProbe.models, {
+                hardware,
+                preferredDefault: 'qwen2.5:3b',
+                allowUnfitFallback: true
+              }) || 'qwen2.5:3b'
+            : modelName;
         const effectiveModel = resolveAvailableOllamaModel(
-          modelName,
+          requestedModel,
           ollamaProbe.models,
           'qwen2.5:3b'
         );
@@ -373,7 +403,7 @@ async function startServer() {
               keep_alive: `${keepAliveMinutes}m`,
               options: {
                 temperature: Number(temperature) || 0.7,
-                num_ctx: resolveChatOllamaNumCtx(effectiveModel),
+                num_ctx: resolveChatOllamaNumCtx(effectiveModel, hardware),
                 num_predict: -1
               }
             }),
@@ -972,8 +1002,12 @@ async function startServer() {
   const parsedPort = Number(process.env.PORT);
   const PORT = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 3000;
   const bootAttribution = verifyServerAttribution();
+  const bootHardware = await initHardwareProfile();
   const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`J.A.R.V.I.S server running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[Hardware] ${formatHardwareReadout(bootHardware)} · maxParams<=${bootHardware.recommendedMaxParamsB}B · defaultCtx=${bootHardware.defaultCtx}`
+    );
     console.log(
       `[Attribution] ${bootAttribution.short} · Seal ${bootAttribution.seal} · ${
         bootAttribution.verified ? 'VERIFIED' : 'INTEGRITY WARNING (LICENSE/NOTICE modified)'

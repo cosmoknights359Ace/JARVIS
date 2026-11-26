@@ -13,20 +13,24 @@ import { ChatView } from './components/ChatView';
 import { HomeView } from './components/HomeView';
 import { XfillView } from './components/XfillView';
 import { SlidesView } from './components/SlidesView';
+import { XconvertView } from './components/XconvertView';
 import { VisionView } from './components/VisionView';
 import { MemoryView } from './components/MemoryView';
 import { SettingsView } from './components/SettingsView';
 import { CapabilitiesModal } from './components/CapabilitiesModal';
+import { OnboardingModal } from './components/OnboardingModal';
 import {
   JarvisRouter,
   handleCommand,
   streamJarvisResponse,
-  probeLocalOllama
+  probeLocalOllama,
+  fetchSystemHardware
 } from './services/jarvisBrain';
 import { SpeechService } from './services/speech';
 import { getShort, getSeal, verifyAttributionReport } from './services/attribution';
 import { sfx } from './services/soundEffects';
 import { saveBlobFile } from './utils/fileDownload';
+import { selectBestModelForTier } from './utils/hardwareTier';
 
 const DEFAULT_SETTINGS: JarvisSettings = {
   model: 'auto',
@@ -62,6 +66,13 @@ export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<NavView>('CHAT');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [showCapabilities, setShowCapabilities] = useState<boolean>(false);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('jarvis_onboarding_seen') !== 'true';
+    } catch {
+      return false;
+    }
+  });
   const [showInspector, setShowInspector] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem('jarvis_inspector_open_v1');
@@ -146,6 +157,7 @@ export const App: React.FC = () => {
     installedModels: [],
     warmUpStatus: 'idle',
     warmUpModel: null,
+    hardware: null,
     attributionVerified: clientAttributionOk,
     attributionSeal: getSeal(),
     licenseFileIntact: true
@@ -210,14 +222,26 @@ export const App: React.FC = () => {
     localStorage.setItem('jarvis_settings_v3', JSON.stringify(settings));
   }, [settings]);
 
-  // Keep resolvedModel synced whenever user updates model preference or default general model
+  // Keep resolvedModel synced whenever user updates model preference, hardware tier, or installed models
   useEffect(() => {
     if (settings.model !== 'auto') {
       setResolvedModel(settings.model);
-    } else {
-      setResolvedModel(settings.generalModel);
+      return;
     }
-  }, [settings.model, settings.generalModel]);
+    if (stats.installedModels.length > 0 && stats.hardware) {
+      const smartPick = selectBestModelForTier(stats.installedModels, {
+        hardware: stats.hardware,
+        preferCoding: false,
+        preferredDefault: settings.generalModel,
+        allowUnfitFallback: true
+      });
+      if (smartPick) {
+        setResolvedModel(smartPick);
+        return;
+      }
+    }
+    setResolvedModel(settings.generalModel);
+  }, [settings.model, settings.generalModel, stats.installedModels, stats.hardware]);
 
   useEffect(() => {
     localStorage.setItem('jarvis_memory_v3', JSON.stringify(memory));
@@ -263,6 +287,18 @@ export const App: React.FC = () => {
   useEffect(() => {
     checkOllamaHealth();
   }, [checkOllamaHealth]);
+
+  // One-time fetch of server-cached hardware profile & VRAM tier
+  useEffect(() => {
+    let active = true;
+    void fetchSystemHardware().then((profile) => {
+      if (!active || !profile) return;
+      setStats((prev) => ({ ...prev, hardware: profile }));
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const pollMs = stats.warmUpStatus === 'warming' ? 2000 : 15000;
@@ -340,6 +376,16 @@ export const App: React.FC = () => {
       if (!next) SpeechService.stop();
       return { ...prev, voiceEnabled: next };
     });
+  }, []);
+
+  const handleDismissOnboarding = useCallback(() => {
+    sfx.playClick();
+    setShowOnboarding(false);
+    try {
+      localStorage.setItem('jarvis_onboarding_seen', 'true');
+    } catch {
+      // ignore storage errors
+    }
   }, []);
 
   const handleSelectModel = useCallback((model: string) => {
@@ -543,7 +589,13 @@ export const App: React.FC = () => {
       return;
     }
 
-    const resolved = routerRef.current.resolve(text, settings.model, settings);
+    const resolved = routerRef.current.resolve(
+      text,
+      settings.model,
+      settings,
+      stats.installedModels,
+      stats.hardware
+    );
     setResolvedModel(resolved);
 
     const assistMsgId = `a-${Date.now()}`;
@@ -763,6 +815,10 @@ export const App: React.FC = () => {
           sfx.playClick();
           setShowCapabilities(true);
         }}
+        onOpenOnboarding={() => {
+          sfx.playClick();
+          setShowOnboarding(true);
+        }}
         onOpenMobileDrawer={() => {
           sfx.playClick();
           setMobileDrawerOpen(true);
@@ -871,6 +927,8 @@ export const App: React.FC = () => {
             />
           )}
 
+          {currentView === 'xconvert' && <XconvertView />}
+
           {currentView === 'VISION' && (
             <VisionView
               settings={settings}
@@ -910,6 +968,14 @@ export const App: React.FC = () => {
           setCurrentView('CHAT');
           handleSendMessage(cmd);
         }}
+        onSelectView={handleSelectView}
+      />
+
+      {/* First-Launch Quick-Start Tip Screen */}
+      <OnboardingModal
+        isOpen={showOnboarding}
+        onDismiss={handleDismissOnboarding}
+        onSelectView={handleSelectView}
       />
     </div>
   );

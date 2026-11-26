@@ -30,7 +30,8 @@ import { DictationService, SpeechService } from '../services/speech';
 import { sfx } from '../services/soundEffects';
 import { ArcReactor } from './ArcReactor';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { formatModelOptionLabel } from '../utils/modelOptions';
+import { formatModelOptionLabel, getModelOptionBadge } from '../utils/modelOptions';
+import { resolveTierNumCtx } from '../utils/hardwareTier';
 
 interface ChatMessageItemProps {
   message: ChatMessage;
@@ -810,11 +811,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
               value={selectedModel}
               onChange={(e) => onSelectModel(e.target.value)}
               aria-label="Select AI Model"
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[225px] truncate shrink-0"
+              title={
+                stats.hardware
+                  ? `${stats.resolvedModel} · ${getModelOptionBadge(stats.resolvedModel, stats.hardware)} · ${resolveTierNumCtx(stats.resolvedModel, stats.hardware)} ctx (${stats.hardware.tier})`
+                  : undefined
+              }
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[265px] truncate shrink-0"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
-                  {formatModelOptionLabel(m, stats.resolvedModel)}
+                  {formatModelOptionLabel(m, stats.resolvedModel, stats.hardware)}
                 </option>
               ))}
             </select>

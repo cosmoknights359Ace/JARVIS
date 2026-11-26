@@ -11,9 +11,11 @@ import {
   Check,
   X,
   Sparkles,
-  Presentation
+  Presentation,
+  ArrowLeftRight
 } from 'lucide-react';
 import { NavView, ChatSession, SystemStats } from '../types';
+import { formatHardwareReadout, roundGb, shortenGpuName } from '../utils/hardwareTier';
 
 interface SidebarProps {
   currentView: NavView;
@@ -173,9 +175,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             Views
           </div>
           <div className="grid grid-cols-2 gap-1.5">
-            {(['CHAT', 'XFILL', 'SLIDES', 'SETTINGS'] as NavView[]).map((v) => {
+            {(['CHAT', 'XFILL', 'SLIDES', 'xconvert', 'SETTINGS'] as NavView[]).map((v) => {
               const isActive = currentView === v;
-              const isFeatured = v === 'XFILL' || v === 'SLIDES';
+              const isFeatured = v === 'XFILL' || v === 'SLIDES' || v === 'xconvert';
               return (
                 <button
                   type="button"
@@ -196,6 +198,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 >
                   {v === 'XFILL' && <Sparkles size={12} className={isActive ? 'text-black' : 'text-cyan-300'} />}
                   {v === 'SLIDES' && <Presentation size={12} className={isActive ? 'text-black' : 'text-cyan-300'} />}
+                  {v === 'xconvert' && <ArrowLeftRight size={12} className={isActive ? 'text-black' : 'text-cyan-300'} />}
                   <span>
                     {v === 'CHAT'
                       ? 'Assistant'
@@ -203,6 +206,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       ? 'Xfill'
                       : v === 'SLIDES'
                       ? 'Xslide'
+                      : v === 'xconvert'
+                      ? 'Xconvert'
                       : 'Settings'}
                   </span>
                 </button>
@@ -365,7 +370,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Bottom Real Engine Diagnostics Panel */}
       <div className="pt-4 mt-4 border-t border-zinc-900 shrink-0">
-        <div className="p-3 rounded-xl bg-[#070709] border border-zinc-800/90 space-y-2.5">
+        <div className="p-2.5 rounded-xl bg-[#070709] border border-zinc-800/90 space-y-2.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-display font-semibold text-zinc-200">
               Engine Diagnostics
@@ -380,6 +385,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <span>Probe</span>
             </button>
           </div>
+
+          {stats.hardware && (
+            <div
+              data-testid="diagnostics-hardware-readout"
+              title={`${formatHardwareReadout(stats.hardware)} · Recommended <= ${stats.hardware.recommendedMaxParamsB}B · Default ${stats.hardware.defaultCtx} ctx`}
+              className="flex items-center justify-between gap-1.5 pb-2 border-b border-zinc-900 text-[9.5px] leading-tight tracking-[-0.015em] tabular-nums whitespace-nowrap"
+            >
+              <span className="text-zinc-300 truncate min-w-0">
+                {stats.hardware.gpuName === 'Integrated / CPU'
+                  ? 'CPU'
+                  : shortenGpuName(stats.hardware.gpuName)}{' '}
+                · {roundGb(stats.hardware.vramGb)}GB VRAM · {roundGb(stats.hardware.systemRamGb)}GB RAM
+              </span>
+              <span className="text-orange-400/90 font-medium shrink-0">
+                {stats.hardware.tier}
+              </span>
+            </div>
+          )}
 
           <div className="space-y-1.5 text-xs">
             <div className="flex items-center justify-between gap-2">

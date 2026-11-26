@@ -583,6 +583,22 @@ def _resolve_save_dialog_type(webview_mod: object) -> object:
     return getattr(webview_mod, "SAVE_DIALOG", 30)
 
 
+def _resolve_open_dialog_type(webview_mod: object) -> object:
+    """Resolves OPEN_DIALOG constant cleanly across pywebview 4.x, 5.x, and 6.x."""
+    file_dialog_enum = getattr(webview_mod, "FileDialog", None)
+    if file_dialog_enum is not None and hasattr(file_dialog_enum, "OPEN"):
+        return getattr(file_dialog_enum, "OPEN")
+    return getattr(webview_mod, "OPEN_DIALOG", 10)
+
+
+def _resolve_folder_dialog_type(webview_mod: object) -> object:
+    """Resolves FOLDER_DIALOG constant cleanly across pywebview 4.x, 5.x, and 6.x."""
+    file_dialog_enum = getattr(webview_mod, "FileDialog", None)
+    if file_dialog_enum is not None and hasattr(file_dialog_enum, "FOLDER"):
+        return getattr(file_dialog_enum, "FOLDER")
+    return getattr(webview_mod, "FOLDER_DIALOG", 20)
+
+
 def _normalize_dialog_selection(selection: object) -> Optional[str]:
     """Normalizes pywebview create_file_dialog return value (str | tuple | list | None)."""
     if not selection:
@@ -594,10 +610,36 @@ def _normalize_dialog_selection(selection: object) -> Optional[str]:
     return text or None
 
 
+def _normalize_dialog_multi_selection(selection: object) -> List[str]:
+    """Normalizes pywebview multi-file dialog return value into a clean list of paths."""
+    if not selection:
+        return []
+    if isinstance(selection, (list, tuple)):
+        out: List[str] = []
+        for item in selection:
+            text = str(item).strip() if item else ""
+            if text:
+                out.append(text)
+        return out
+    text = str(selection).strip()
+    return [text] if text else []
+
+
+def _load_xconvert_engine():
+    """Imports the local xconvert_engine module from REPO_ROOT."""
+    repo_str = str(REPO_ROOT)
+    if repo_str not in sys.path:
+        sys.path.insert(0, repo_str)
+    import xconvert_engine  # type: ignore
+
+    return xconvert_engine
+
+
 class DesktopApi:
     """
     pywebview JS-to-Python bridge exposed as `window.pywebview.api`.
-    Provides reliable native file saving when WebView2 drops `blob:` downloads.
+    Provides reliable native file saving when WebView2 drops `blob:` downloads,
+    plus native local disk-to-disk Xconvert file conversion hooks.
     """
 
     def __init__(self) -> None:
@@ -608,9 +650,7 @@ class DesktopApi:
         self._window = window
         self._webview = webview_mod
 
-    def save_file(self, filename: str, base64_data: str) -> Dict[str, object]:
-        """Opens a native Save dialog, decodes base64_data, and writes bytes to disk."""
-        safe_name = Path(str(filename or "jarvis_export.bin")).name or "jarvis_export.bin"
+    def _get_window_and_webview(self) -> Tuple[Optional[object], Optional[object]]:
         webview_mod = self._webview
         window = self._window
 
@@ -618,6 +658,13 @@ class DesktopApi:
             windows = getattr(webview_mod, "windows", None)
             if windows:
                 window = windows[0]
+
+        return window, webview_mod
+
+    def save_file(self, filename: str, base64_data: str) -> Dict[str, object]:
+        """Opens a native Save dialog, decodes base64_data, and writes bytes to disk."""
+        safe_name = Path(str(filename or "jarvis_export.bin")).name or "jarvis_export.bin"
+        window, webview_mod = self._get_window_and_webview()
 
         if window is None or webview_mod is None or not hasattr(window, "create_file_dialog"):
             return {"ok": False, "error": "Desktop save dialog is unavailable."}
@@ -668,6 +715,105 @@ class DesktopApi:
             return {"ok": True, "path": str(target)}
         except OSError as exc:
             return {"ok": False, "error": f"Failed to write file: {exc}"}
+
+    def xconvert_capabilities(self) -> Dict[str, object]:
+        """Returns installed Python conversion engine availability and install hint."""
+        engine = _load_xconvert_engine()
+        return engine.get_capabilities()
+
+    def xconvert_pick_files(self) -> List[Dict[str, object]]:
+        """Opens a native multi-file picker and returns inspect_file() metadata for each file."""
+        window, webview_mod = self._get_window_and_webview()
+        if window is None or webview_mod is None or not hasattr(window, "create_file_dialog"):
+            return []
+
+        dialog_type = _resolve_open_dialog_type(webview_mod)
+        initial_dir = str(Path.home())
+        dialog_kwargs: Dict[str, object] = {
+            "directory": initial_dir,
+            "allow_multiple": True,
+            "file_types": ("All files (*.*)",),
+        }
+
+        try:
+            sig = inspect.signature(window.create_file_dialog)
+            supported_kwargs = {k: v for k, v in dialog_kwargs.items() if k in sig.parameters}
+        except (TypeError, ValueError):
+            supported_kwargs = {"directory": initial_dir, "allow_multiple": True}
+
+        try:
+            selection = window.create_file_dialog(dialog_type, **supported_kwargs)  # type: ignore[attr-defined]
+        except TypeError:
+            selection = window.create_file_dialog(dialog_type, allow_multiple=True)  # type: ignore[attr-defined]
+        except Exception:
+            return []
+
+        paths = _normalize_dialog_multi_selection(selection)
+        if not paths:
+            return []
+
+        engine = _load_xconvert_engine()
+        return [engine.inspect_file(path) for path in paths]
+
+    def xconvert_pick_output_dir(self) -> Optional[str]:
+        """Opens a native folder picker and returns the selected directory path or None."""
+        window, webview_mod = self._get_window_and_webview()
+        if window is None or webview_mod is None or not hasattr(window, "create_file_dialog"):
+            return None
+
+        dialog_type = _resolve_folder_dialog_type(webview_mod)
+        initial_dir = str(Path.home())
+        dialog_kwargs: Dict[str, object] = {
+            "directory": initial_dir,
+        }
+
+        try:
+            sig = inspect.signature(window.create_file_dialog)
+            supported_kwargs = {k: v for k, v in dialog_kwargs.items() if k in sig.parameters}
+        except (TypeError, ValueError):
+            supported_kwargs = {"directory": initial_dir}
+
+        try:
+            selection = window.create_file_dialog(dialog_type, **supported_kwargs)  # type: ignore[attr-defined]
+        except TypeError:
+            selection = window.create_file_dialog(dialog_type)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+        return _normalize_dialog_selection(selection)
+
+    def xconvert_run_batch(self, jobs: object) -> List[Dict[str, object]]:
+        """Executes disk-to-disk batch file conversions via xconvert_engine.convert_batch."""
+        if not isinstance(jobs, list):
+            return []
+        engine = _load_xconvert_engine()
+        return engine.convert_batch(jobs)
+
+    def xconvert_open_in_explorer(self, path: str) -> Dict[str, object]:
+        """Opens Windows Explorer (or macOS Finder / Linux file manager) highlighting the file."""
+        raw = str(path or "").strip()
+        if not raw:
+            return {"ok": False, "error": "No file path provided."}
+
+        target = Path(raw).resolve()
+        if not target.exists():
+            return {"ok": False, "error": f"Path not found: {target}"}
+
+        try:
+            if IS_WINDOWS:
+                subprocess.Popen(
+                    ["explorer", f"/select,{target}"],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(target)])
+            else:
+                open_target = target.parent if target.is_file() else target
+                subprocess.Popen(["xdg-open", str(open_target)])
+            return {"ok": True, "path": str(target)}
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not open file manager: {exc}"}
+
 
 
 def launch_desktop_window(

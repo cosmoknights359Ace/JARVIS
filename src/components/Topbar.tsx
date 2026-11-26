@@ -1,11 +1,12 @@
 import React from 'react';
-import { Menu, Sparkles, Presentation } from 'lucide-react';
+import { Menu, Sparkles, Presentation, ArrowLeftRight, HelpCircle } from 'lucide-react';
 import { NavView } from '../types';
 
 interface TopbarProps {
   currentView: NavView;
   onSelectView: (view: NavView) => void;
   onOpenCapabilities: () => void;
+  onOpenOnboarding: () => void;
   onOpenMobileDrawer: () => void;
 }
 
@@ -13,12 +14,14 @@ export const Topbar: React.FC<TopbarProps> = ({
   currentView,
   onSelectView,
   onOpenCapabilities,
+  onOpenOnboarding,
   onOpenMobileDrawer
 }) => {
   const navItems: { view: NavView; label: string; featured?: boolean }[] = [
     { view: 'CHAT', label: 'Assistant' },
     { view: 'XFILL', label: 'Xfill', featured: true },
     { view: 'SLIDES', label: 'Xslide', featured: true },
+    { view: 'xconvert', label: 'Xconvert', featured: true },
     { view: 'SETTINGS', label: 'Settings' }
   ];
 
@@ -48,7 +51,7 @@ export const Topbar: React.FC<TopbarProps> = ({
       </div>
 
       {/* Zone 2: Centered navigation links */}
-      <nav aria-label="Primary workspace navigation" className="hidden md:flex items-center gap-7 text-sm font-medium">
+      <nav aria-label="Primary workspace navigation" className="hidden md:flex items-center gap-5 lg:gap-7 text-sm font-medium">
         {navItems.map((item) => {
           const isActive = currentView === item.view;
           if (item.featured) {
@@ -69,6 +72,8 @@ export const Topbar: React.FC<TopbarProps> = ({
               >
                 {item.view === 'SLIDES' ? (
                   <Presentation size={13} className={isActive ? 'text-black' : 'text-cyan-300'} />
+                ) : item.view === 'xconvert' ? (
+                  <ArrowLeftRight size={13} className={isActive ? 'text-black' : 'text-cyan-300'} />
                 ) : (
                   <Sparkles size={13} className={isActive ? 'text-black' : 'text-cyan-300'} />
                 )}
@@ -98,8 +103,18 @@ export const Topbar: React.FC<TopbarProps> = ({
         })}
       </nav>
 
-      {/* Zone 3: Secondary guide action (subtle outlined style so composer Send stays primary) */}
-      <div className="flex items-center gap-3 shrink-0">
+      {/* Zone 3: Quick Guide (?) + Secondary guide action */}
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          onClick={onOpenOnboarding}
+          title="Quick Guide"
+          aria-label="Quick Guide"
+          className="p-2 rounded-lg text-zinc-400 hover:text-orange-400 bg-zinc-900/70 hover:bg-zinc-900 border border-zinc-800 hover:border-orange-500/40 transition-colors shrink-0"
+        >
+          <HelpCircle size={15} />
+        </button>
+
         <button
           type="button"
           onClick={onOpenCapabilities}

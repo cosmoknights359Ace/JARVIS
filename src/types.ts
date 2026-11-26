@@ -1,10 +1,27 @@
-export type NavView = 'HOME' | 'CHAT' | 'XFILL' | 'SLIDES' | 'VISION' | 'MEMORY' | 'SETTINGS';
+export type NavView = 'HOME' | 'CHAT' | 'XFILL' | 'SLIDES' | 'xconvert' | 'VISION' | 'MEMORY' | 'SETTINGS';
 
 export type MessageRole = 'user' | 'assist' | 'system' | 'boot';
 
 export type EngineProvider = 'ollama' | 'gemini' | 'offline';
 
 export type WarmUpStatus = 'idle' | 'warming' | 'ready' | 'skipped' | 'failed';
+
+export type HardwareTier =
+  | 'CPU / Low VRAM'
+  | 'Entry GPU'
+  | 'Mid-Range GPU'
+  | 'High-End GPU';
+
+export type ModelFitBadge = 'Optimal' | 'Heavy' | 'Too Heavy';
+
+export interface HardwareProfile {
+  gpuName: string;
+  vramGb: number;
+  systemRamGb: number;
+  tier: HardwareTier;
+  recommendedMaxParamsB: number;
+  defaultCtx: number;
+}
 
 export interface ChatMessage {
   id: string;
@@ -46,6 +63,7 @@ export interface SystemStats {
   installedModels: string[];
   warmUpStatus: WarmUpStatus;
   warmUpModel: string | null;
+  hardware: HardwareProfile | null;
   attributionVerified: boolean;
   attributionSeal: string;
   licenseFileIntact: boolean;
