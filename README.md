@@ -1,25 +1,18 @@
-# J.A.R.V.I.S — Local-First Personal AI Assistant Workstation
+# J.A.R.V.I.S. — Local-First Personal AI Desktop Workstation
 
-> **Just A Rather Very Intelligent System** — A private, local-first AI command workstation powered by **[Ollama](https://ollama.com)**, featuring streaming chat with smart model routing, **Xfill** grounded Office document auto-fill (`.docx`, `.xlsx`, `.pptx`), **Xslide** 16:9 PowerPoint deck generation with consent-gated web imagery, persistent memory, voice synthesis/dictation, and built-in creator copyright verification.
+> **Just A Rather Very Intelligent System** — A private, local-first AI desktop workstation powered by **[Ollama](https://ollama.com)**, featuring an engine-reactive animated HUD, smart model routing, hardware-aware VRAM tiering, **Xfill** document automation, **Xslide** PowerPoint generation, and **Xconvert** universal local file conversion.
 
-![J.A.R.V.I.S](assets/jarvis_circle.png)
+<!-- Tip: Replace this with your actual screenshot or demo GIF once uploaded to GitHub -->
+<!-- ![J.A.R.V.I.S. Desktop UI](assets/jarvis_preview.png) -->
 
 ---
 
 ## Table of Contents
-
 - [Core Features](#core-features)
 - [Prerequisites](#prerequisites)
 - [Installation Guide](#installation-guide)
-  - [1. Install Ollama](#1-install-ollama)
-  - [2. Pull Local AI Models](#2-pull-local-ai-models)
-  - [3. Clone & Install J.A.R.V.I.S](#3-clone--install-jarvis)
-  - [4. Optional Cloud Fallback (.env)](#4-optional-cloud-fallback-env)
-  - [5. Start J.A.R.V.I.S](#5-start-jarvis)
+- [Running as a Native Desktop App (Windows)](#running-as-a-native-desktop-app-windows)
 - [Feature Walkthrough](#feature-walkthrough)
-  - [Assistant (Chat, Routing & Voice)](#assistant-chat-routing--voice)
-  - [Xfill (Grounded Document Auto-Fill)](#xfill-grounded-document-auto-fill)
-  - [Xslide (Local PowerPoint Generator)](#xslide-local-powerpoint-generator)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Troubleshooting](#troubleshooting)
 - [Tech Stack](#tech-stack)
@@ -29,42 +22,49 @@
 
 ## Core Features
 
-- **Local-First Architecture (Ollama Primary + Optional Cloud Fallback)**
-  - Runs 100% locally against your own Ollama server (`http://localhost:11434`)—no cloud API key required.
-  - Automatically falls back to Gemini Cloud only if local Ollama is offline **and** `GEMINI_API_KEY` is configured.
-- **Assistant — Streaming Chat & Sticky Model Routing**
-  - Real-time Server-Sent Events (SSE) token streaming with Stop, Edit, Regenerate, and Copy controls.
-  - **Sticky Auto-Routing**: Automatically switches between your fast general model (`qwen2.5:3b`) and your coding model (`qwen2.5-coder:7b`) when programming topics are detected, staying sticky across coding threads so Ollama doesn't waste time swapping weights.
-  - Rich Markdown rendering with syntax-highlighted code blocks and 1-click copy.
-  - Multi-session conversation history with live search, inline rename, delete, and Markdown (`.md`) transcript export.
-  - Built-in **Memory Bank** (`remember key=value`, `recall key`, `forget key`) injected directly into prompts, plus instant local commands (`/status`, `/calc`, `/code`, `/help`).
-  - **Voice Input (STT) & Speech Output (TTS)** with mute toggle, voice selection, pitch/rate tuning, and automatic code-block stripping before speaking.
-  - **Live Engine Diagnostics**: Real active provider status, Ollama probe ping (ms), Time-to-First-Token (TTFT), and streaming throughput (`tok/s`).
-- **Xfill — Grounded Document Auto-Fill (`.docx`, `.xlsx`, `.pptx`)**
-  - Upload Word documents, Excel spreadsheets, or PowerPoint decks (or load built-in 1-click sample files).
-  - Deterministically parses Office XML/workbooks to detect explicit placeholders (`{{...}}`, `[...]`, `____`, `<...>`), labelled blank fields (`Answer:`, `Name: ____`), Q&A pairs, and empty spreadsheet answer columns without letting the LLM rewrite document structure.
-  - Low-hallucination grounded solver (`temperature: 0.1`, JSON-constrained output) prioritizes **Memory Bank → Context Notes → Verified Knowledge**, and flags unknown private/personal fields as `[NEEDS INPUT]` instead of fabricating values.
-  - Review, filter, edit answers inline, regenerate single fields, save answers directly to Memory (`Remember`), and export the updated `.docx`, `.xlsx`, or `.pptx` with original styling preserved.
-- **Xslide — Local PowerPoint (`.pptx`) Generator with Consent-Gated Web Images**
-  - Drafts complete 16:9 presentations (`5`–`12` slides) with structured layouts (`Title Hero`, `Split + Image`, `Bullets`, `Two Column`, `Key Metric`), crisp bullet points, and presenter **Speaker Notes**.
-  - **4 Visual Theme Presets**: `Obsidian & Orange`, `Editorial Ivory`, `Slate Executive`, and `Emerald Tech`, with a live proportional 16:9 preview canvas.
-  - **Explicit Consent-Gated Web Images**: Outbound image search is locked off by default (enforced in both UI and server HTTP `403` guard). Once you explicitly approve access in the Consent Dialog, browse and attach royalty-free visuals from **Wikimedia Commons** & **Openverse**—only short 2–5 word visual keywords are sent, never your private notes or Memory Bank.
-  - Compiles and downloads an offline-ready `.pptx` file with approved images embedded directly inside the presentation alongside your Speaker Notes.
-- **Hardened Creator Attribution & Integrity Guard**
-  - Cryptographically sealed Copyright Management Information (`J.A.R.V.I.S (c) 2026 cosmoknight`, Seal `ceff726d5d41618b`) verified across client, server headers, build pipeline, and GitHub Actions CI.
+### Local-First Desktop Architecture
+- **Native Desktop Shell (`pywebview`):** Runs as a standalone **Obsidian & Orange** desktop application with Windows System Tray (`pystray`) minimize-to-tray support and a silent desktop shortcut launcher (`Launch_JARVIS.vbs`)—no browser tabs or flashing console windows.
+- **100% Offline Primary Engine:** Connects directly to your local Ollama server (`http://localhost:11434`) with zero API keys required. Optional Gemini Cloud fallback is supported only if Ollama is offline and `GEMINI_API_KEY` is configured.
+- **Hardware-Aware VRAM Tiering:** Automatically detects your GPU VRAM and system RAM (e.g., *Entry GPU · 4GB VRAM*) to badge models as `Optimal`, `Heavy`, or `Too Heavy` and tune context limits safely.
+- **Zero-Terminal Model Manager:** Pull, monitor download progress, and delete Ollama models directly inside the app without opening a terminal.
+
+### Assistant — Streaming Chat, Routing & HUD
+- **Engine-Reactive Animated HUD Core:** Concentric rotating SVG HUD that visually reflects live engine status (`Offline` standby, `Online` cyan glow, and `Thinking` accelerated spin).
+- **Sticky Auto-Routing:** Automatically switches between your fast general model (`qwen2.5:3b`) and coding model (`qwen2.5-coder:7b`) when programming topics are detected, staying sticky across coding threads to avoid unnecessary model swaps.
+- **Real-Time Streaming & Controls:** Server-Sent Events (SSE) streaming with Stop, Edit, Regenerate, Copy, syntax-highlighted code blocks, and one-click starter prompt chips.
+- **Persistent Memory Bank & Local Commands:** Store facts (`remember key=value`, `recall key`, `forget key`) injected directly into prompts, plus instant commands (`/status`, `/calc`, `/code`, `/clear`, `/export`).
+- **Voice Input (STT) & Speech Output (TTS):** Hands-free dictation and speech synthesis with mute toggle, voice/rate tuning, and automatic code-block stripping.
+- **Live Engine Diagnostics:** Real-time Ollama probe ping (`ms`), VRAM readiness, Time-to-First-Token (TTFT), and streaming throughput (`tok/s`).
+
+### Xfill — Grounded Document Auto-Fill (`.docx`, `.xlsx`, `.pptx`)
+- Deterministically parses Office XML/workbooks to detect template tags (`{{...}}`), inline blanks (`____`), labelled fields (`Answer:`, `Name:`), Q&A pairs, and empty spreadsheet/table cells without letting the LLM break document layout.
+- Low-hallucination grounded solver (`temperature: 0.1`, JSON-constrained) prioritizes **Memory Bank → Context Notes → Verified Knowledge**, flagging unknown private fields as `[NEEDS INPUT]` instead of fabricating personal info.
+- Review, edit inline, regenerate individual fields, save answers to Memory, and export the completed `.docx`, `.xlsx`, or `.pptx` with original styling preserved.
+
+### Xslide — Local PowerPoint (`.pptx`) Generator
+- Generates structured 16:9 presentations (5–12 slides) with multiple layouts (*Title Hero*, *Split + Image*, *Bullets*, *Two Column*, *Key Metric*, *Table*) and presenter Speaker Notes.
+- 4 Visual Theme Presets (*Obsidian & Orange*, *Editorial Ivory*, *Slate Executive*, *Emerald Tech*) with a live 16:9 preview canvas.
+- **Consent-Gated Web Images:** Outbound image search is locked off by default (enforced in UI and server HTTP 403 guard). Once approved, browse and embed royalty-free visuals from Wikimedia Commons & Openverse using only 2–5 word visual keywords.
+
+### Xconvert — Universal Local File Converter
+- Local disk-to-disk batch conversion with **zero upload or file-size limits**:
+  - **Documents:** `.docx`, `.pdf`, `.md`, `.html`, `.txt`
+  - **Images:** `.png`, `.jpg`, `.webp`, `.ico` (with automatic `RGBA → RGB` handling)
+  - **Data:** `.csv`, `.xlsx`, `.json`, `.yaml`
+  - **Media & Archives:** `.mp4` → `.mp3` / `.gif` (via headless `ffmpeg`), `.zip` / `.7z`
+- Includes batch "Set All To..." format selection, custom output folder picker, missing-engine detection hints, and 1-click **Open in Explorer**.
 
 ---
 
 ## Prerequisites
 
-Before installing J.A.R.V.I.S, make sure your machine has:
-
 | Requirement | Minimum | Recommended |
-|---|---|---|
-| **Operating System** | Windows 10/11, macOS 13+, or Linux | 64-bit OS |
-| **Node.js** | v20.0 or higher | v20 LTS / v22 LTS |
+| :--- | :--- | :--- |
+| **Operating System** | Windows 10/11, macOS 13+, or Linux | Windows 11 (64-bit) |
+| **Node.js** | v20.0+ | v20 LTS / v22 LTS |
+| **Python** | 3.10+ (for Desktop Shell & Xconvert) | 3.11+ |
 | **Ollama** | Latest release | Latest release |
-| **RAM** | 8 GB (runs `qwen2.5:3b`) | 16 GB+ (runs `qwen2.5-coder:7b` smoothly) |
+| **RAM / VRAM** | 8 GB RAM (`qwen2.5:3b`) | 16 GB RAM + 4 GB+ VRAM (`qwen2.5-coder:7b`) |
 | **Disk Space** | ~3 GB free | ~10 GB free (for multiple local models) |
 
 ---
@@ -72,156 +72,156 @@ Before installing J.A.R.V.I.S, make sure your machine has:
 ## Installation Guide
 
 ### 1. Install Ollama
+Download and install Ollama from [ollama.com/download](https://ollama.com/download) (or on Linux: `curl -fsSL https://ollama.com/install.sh | sh`).
 
-Download and install Ollama for your operating system:
-
-- **Windows & macOS:** Download the official installer from [https://ollama.com/download](https://ollama.com/download) and run it.
-- **Linux:**
-  ```bash
-  curl -fsSL https://ollama.com/install.sh | sh
-  ```
-
-Verify the installation in your terminal:
-
+Verify installation:
 ```bash
 ollama --version
 ```
 
 ### 2. Pull Local AI Models
-
-Pull the default models used by J.A.R.V.I.S's sticky auto-router, **Xfill**, and **Xslide**:
+Pull the recommended models used by J.A.R.V.I.S.'s sticky auto-router (or install them later inside the app via **Manage Models**):
 
 ```bash
-# Fast general assistant, Xfill document solver, and Xslide outline generator (~1.9 GB)
+# Fast general assistant, Xfill solver, and Xslide generator (~1.9 GB)
 ollama pull qwen2.5:3b
 
-# Dedicated coding & technical reasoning model for auto-routing (~4.7 GB)
+# Dedicated coding & technical reasoning model (~4.7 GB)
 ollama pull qwen2.5-coder:7b
 ```
 
-#### Optional: Custom Fine-Tuned `vai-doc:latest` Model (Recommended for Xfill & Xslide)
+#### Optional: Custom Fine-Tuned `vai-doc:latest` Model (Xfill & Xslide)
+J.A.R.V.I.S. routes **Xfill** and **Xslide** to `vai-doc:latest` by default (automatically falling back to installed models such as `qwen2.5:3b` if `vai-doc:latest` is not installed). To register a local quantized `vai-doc.gguf` model:
 
-J.A.R.V.I.S routes **Xfill** and **Xslide** to `vai-doc:latest` by default (with automatic local fallback to `qwen2.5:3b` if `vai-doc:latest` is not installed yet). To register your quantized `vai-doc.gguf` file with Ollama:
+1. Place `vai-doc.gguf` inside the `models/` directory (`*.gguf` files are gitignored).
+2. Create the Ollama model using the bundled Modelfile:
+   ```bash
+   ollama create vai-doc:latest -f models/Modelfile.vai-doc
+   ```
 
-1. Place `vai-doc.gguf` inside the `models/` folder (all `*.gguf` files are gitignored so model weights are never committed to GitHub).
-2. Build the Ollama model from the included Modelfile (`num_ctx 8192` + ChatML stop tokens):
-
-```bash
-ollama create vai-doc:latest -f models/Modelfile.vai-doc
-```
-
-3. You can switch the active Xfill or Xslide model anytime from **Settings** or directly inside the **Xfill** / **Xslide** headers.
-
-*(Optional — only needed if you want local image/vision analysis)*:
-
+*(Optional — for local image/vision analysis)*:
 ```bash
 ollama pull llama3.2-vision:latest
 ```
 
-Confirm your models are installed:
+Make sure the Ollama service is running (`ollama serve` if not auto-started by the Ollama tray app).
 
-```bash
-ollama list
-```
-
-Make sure the Ollama server is running (on Windows/macOS the tray app starts it automatically; on Linux or if stopped, run):
-
-```bash
-ollama serve
-```
-
-> By default, Ollama listens on `http://localhost:11434`. You can change this URL anytime inside J.A.R.V.I.S **Settings**.
-
-### 3. Clone & Install J.A.R.V.I.S
+### 3. Clone & Install Dependencies
 
 ```bash
 # Clone the repository
 git clone https://github.com/cosmoknight/JARVIS.git
 cd JARVIS
 
-# Install dependencies
+# Install Node.js frontend & server dependencies
 npm install
 ```
 
-*(Replace the clone URL above with your repository's exact GitHub URL.)*
+*(Optional — for Native Desktop Shell, System Tray, and Xconvert engines)*:
+```bash
+# Core desktop window & Windows system tray
+pip install pywebview pystray Pillow
+
+# Optional Xconvert document, data, archive, and media engines
+pip install img2pdf PyMuPDF python-docx pdf2docx pandas openpyxl PyYAML imageio-ffmpeg py7zr markdown
+```
 
 ### 4. Optional Cloud Fallback (`.env`)
-
-J.A.R.V.I.S works **100% locally with Ollama** with zero API keys.
-
-If you also want automatic Gemini Cloud fallback whenever your local Ollama service is stopped:
+J.A.R.V.I.S. runs **100% locally with Ollama** and requires no API keys. To enable automatic Gemini Cloud fallback when Ollama is stopped:
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env` and add your key:
-
+Set your key in `.env`:
 ```env
 GEMINI_API_KEY=your_api_key_here
 ```
 
-### 5. Start J.A.R.V.I.S
-
-**Development mode:**
+### 5. Start in Web Mode (Any OS)
 
 ```bash
+# Development mode (Express + Vite middleware on port 3000)
 npm run dev
-```
 
-**Production build & start:**
-
-```bash
+# Production build & start
 npm run build
 npm start
 ```
 
-Open your browser and go to:
+Open `http://localhost:3000` in your browser.
 
-```text
-http://localhost:3000
+---
+
+## Running as a Native Desktop App (Windows)
+
+### Launch Directly via `pywebview`
+Build the frontend once (optional—`jarvis_gui.py` auto-selects `dist/` or Vite dev mode) and start the native desktop window:
+
+```bash
+npm run build
+python jarvis_gui.py
 ```
+
+Useful launcher flags:
+- `python jarvis_gui.py --prod` — run compiled `dist/` build (auto-builds if missing)
+- `python jarvis_gui.py --dev` — force Vite dev middleware mode
+- `python jarvis_gui.py --debug` — enable WebView DevTools
+
+### System Tray & Minimize-to-Tray
+When `pystray` and `Pillow` are installed:
+- Clicking the window **`X`** button minimizes J.A.R.V.I.S. silently to the Windows System Tray instead of killing the local backend.
+- Right-click (or click) the tray icon to **Show / Hide JARVIS** or **Quit JARVIS** (which cleanly terminates the local Node.js subprocess tree with zero orphan processes).
+
+### One-Click Silent Windows Desktop Shortcut
+Create a console-free Desktop shortcut (`JARVIS.lnk`) backed by `Launch_JARVIS.vbs`:
+
+```bash
+python create_shortcut.py
+```
+
+Double-clicking **JARVIS** on your Desktop launches `jarvis_gui.py` silently via `pythonw.exe` with **zero flashing black terminal window**.
 
 ---
 
 ## Feature Walkthrough
 
-### Assistant (Chat, Routing & Voice)
-
-- Type naturally or switch models (`auto`, `qwen2.5:3b`, `qwen2.5-coder:7b`, or any model installed in Ollama) directly from the composer.
-- Store persistent personal or project facts using natural commands:
-  - `remember company=Acme Labs`
-  - `recall company`
-  - `forget company`
-  - `show memory`
-- Run built-in zero-latency utility commands:
-  - `/status` — display live provider status, probe latency, and model routing
-  - `/calc (256 * 16) + 1024` — instant math evaluation
+### Assistant (Chat, Routing, HUD & Model Manager)
+- **Welcome HUD & Starter Prompts:** On a fresh session, the animated HUD core mirrors live engine status (`Offline`, `Online`, `Thinking`) above four one-click starter prompt chips (*Debug & Fix Code*, *Explain Simply*, *Quick Script*, *Use My Memory*).
+- **Zero-Terminal Model Manager:** Open **Manage Models** from the sidebar or model selector dropdown to view installed models, install recommended hardware-badged models with a live progress bar, pull any custom Ollama tag, or remove unused models.
+- **Persistent Memory & Instant Commands:**
+  - `remember company=Acme Labs` / `recall company` / `forget company` / `show memory`
+  - `/status` — live provider status, probe latency, and model route
+  - `/calc (256 * 16) + 1024` — instant local calculation
   - `/code <prompt>` — force routing to your coding model
-  - `/clear` or `/export` — clear current chat or download a `.md` transcript
+  - `/clear` or `/export` — clear screen or export conversation as `.md`
 
 ### Xfill (Grounded Document Auto-Fill)
-
-1. Click the neon cyan **`Xfill`** tab in the top navigation bar.
-2. Upload any `.docx`, `.xlsx`, or `.pptx` form/questionnaire (up to 12 MB)—or click **Word `.docx`**, **Excel `.xlsx`**, or **Slide `.pptx`** to test immediately with built-in samples.
-3. *(Optional)* Paste reference facts into **Context Notes**, pick an answer style (`Concise`, `Detailed`, `Bullets`), or enable **Strict Context-Only Mode** to restrict answers strictly to your Memory Bank and notes.
-4. Click **Auto-Fill Detected Fields**. Unknown private details (e.g., phone numbers, employee IDs) are safely marked `[NEEDS INPUT]` instead of hallucinated.
-5. Review or edit any answer inline, click **Remember** to save useful facts into J.A.R.V.I.S Memory, and click **Export Updated File** to download the completed document with original formatting preserved.
+1. Open the **`Xfill`** tab in the top navigation bar.
+2. Upload any `.docx`, `.xlsx`, or `.pptx` file (or test immediately with the built-in sample documents).
+3. *(Optional)* Add **Context Notes**, pick an answer style (*Concise*, *Detailed*, *Bullets*), or enable **Strict Context-Only Mode**.
+4. Click **Auto-Fill Detected Fields**—unknown private fields are flagged `[NEEDS INPUT]` instead of hallucinated.
+5. Edit answers inline, save facts to Memory, and click **Export Updated File** with original formatting intact.
 
 ### Xslide (Local PowerPoint Generator)
+1. Open the **`Xslide`** tab in the top navigation bar.
+2. Enter a topic, slide count (`5`–`12`), tone, optional context notes, and choose one of the **4 Visual Theme Presets**.
+3. Click **Generate Deck** to draft structured slides, native tables, and presenter **Speaker Notes**.
+4. *(Optional)* Approve **Allow Web Images** to browse and embed royalty-free Wikimedia Commons / Openverse visuals per slide.
+5. Fine-tune slides on the live 16:9 canvas and click **Export `.pptx`**.
 
-1. Click the neon cyan **`Xslide`** tab in the top navigation bar.
-2. Enter your presentation topic, choose slide count (`5`–`12`), audience tone (`Executive`, `Technical`, `Educational`, `Pitch`), optional grounding notes, and pick one of the **4 Visual Theme Presets**.
-3. Click **Generate Deck** to draft the structured outline and speaker notes via local Ollama.
-4. *(Optional)* Click **Allow Web Images** and approve the explicit **Web Access Consent Dialog** to search and preview royalty-free visuals from Wikimedia Commons / Openverse per slide (or batch-fill visuals). You can revoke web access anytime with **Revoke Web**.
-5. Edit titles, bullets, layouts, slide order, and **Presenter Speaker Notes** while watching the live 16:9 canvas update, then click **Export `.pptx`** to download an offline-ready PowerPoint deck.
+### Xconvert (Universal Local File Converter)
+1. Open the **`Xconvert`** tab in the top navigation bar.
+2. Drop or pick local files (or folders) across documents, images, spreadsheets/data, media, and archives.
+3. Select per-file target formats or use **Set All To...**, pick a custom output folder if desired, and click **Convert All**.
+4. Click **Open in Explorer** to jump straight to the converted files on disk.
 
 ---
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
-|---|---|
+| :--- | :--- |
 | `Enter` | Send message in Assistant |
 | `Shift + Enter` | Insert newline in composer |
 | `↑` / `↓` | Cycle previous prompt history |
@@ -235,23 +235,26 @@ http://localhost:3000
 
 ## Troubleshooting
 
-- **Ollama shows as Offline in Engine Diagnostics**
-  - Verify Ollama is running by visiting `http://localhost:11434/api/tags` in your browser or running `ollama serve`.
-  - If Ollama runs on another port or LAN machine, update **Ollama Host URL** inside **Settings** and click **Probe**.
-- **First response feels slow**
-  - The first request after starting Ollama loads model weights into RAM/VRAM. J.A.R.V.I.S sends `keep_alive: 30m` (configurable in **Settings**) so subsequent replies stay instant.
-- **Model not found error**
-  - Run `ollama list` and verify the selected model name matches an installed tag (e.g., `ollama pull qwen2.5:3b`).
+- **Ollama shows as Offline**
+  - Click **Retry Connection** on the in-app recovery banner or **Probe** in Engine Diagnostics, and verify Ollama is running at `http://localhost:11434/api/tags` (or start it with `ollama serve`).
+  - If Ollama runs on another port or LAN host, update **Ollama Host URL** in **Settings**.
+- **First reply feels slow**
+  - Ollama loads model weights into RAM/VRAM on the first turn. J.A.R.V.I.S. automatically pre-warms your model and sends `keep_alive: 30m` (configurable in **Settings**) so follow-up turns stay fast.
+- **Model not found**
+  - Open **Manage Models** inside J.A.R.V.I.S. (or run `ollama list` / `ollama pull qwen2.5:3b`) to install the missing tag.
+- **Xconvert reports a missing engine**
+  - Xconvert detects available Python libraries automatically and shows the exact `pip install ...` command for any optional format engine (such as `PyMuPDF`, `pdf2docx`, or `imageio-ffmpeg`).
 - **Build fails with `[COPYRIGHT INTEGRITY CHECK FAILED]`**
-  - Run `npm run verify:copyright` to inspect which attribution file (`LICENSE`, `NOTICE`, `src/services/attribution.ts`, `server.ts`, or policy files) was modified. Retaining original creator attribution is required by the license.
+  - Run `npm run verify:copyright` to see which attribution file (`LICENSE`, `NOTICE`, `src/services/attribution.ts`, `server.ts`, or agent policy files) was altered. Original creator attribution must remain intact per the license.
 
 ---
 
 ## Tech Stack
 
-- **Frontend:** React 19, TypeScript, Vite 6, Tailwind CSS v4, Lucide Icons
+- **Frontend:** React 19, TypeScript, Vite 6, Tailwind CSS v4, Lucide Icons, Orbitron / Outfit / Plus Jakarta Sans / JetBrains Mono
 - **Backend:** Node.js, Express 5 (`tsx`)
-- **Local AI & Optional Cloud:** Ollama REST API (`/api/chat`, `/api/tags`), `@google/genai` (server-side fallback)
+- **Native Desktop & Local Converters:** Python 3, `pywebview`, `pystray`, `Pillow`, `xconvert_engine.py`
+- **Local AI & Optional Cloud:** Ollama REST API (`/api/chat`, `/api/tags`, `/api/pull`, `/api/delete`), `@google/genai` (optional server-side fallback)
 - **Document & Presentation Engines:** `jszip`, `exceljs`, `pptxgenjs`
 
 ---
