@@ -837,22 +837,26 @@ def resolve_tray_icon_path(repo_root: Path = REPO_ROOT) -> Optional[Path]:
     return None
 
 
-def _load_tray_image(repo_root: Path = REPO_ROOT) -> Optional[object]:
+def _load_tray_image(
+    repo_root: Path = REPO_ROOT,
+    pil_image_mod: Optional[object] = None,
+) -> Optional[object]:
     """Loads the JARVIS tray icon as a detached PIL Image (safe against Windows file locks)."""
-    if PILImage is None:
+    pil_mod = PILImage if pil_image_mod is None else pil_image_mod
+    if pil_mod is None:
         return None
 
     icon_path = resolve_tray_icon_path(repo_root)
     if icon_path is not None:
         try:
-            with PILImage.open(icon_path) as img:
+            with pil_mod.open(icon_path) as img:  # type: ignore[attr-defined]
                 return img.convert("RGBA").copy()
         except Exception:
             pass
 
     # Fallback Obsidian & Orange square icon if asset file is missing or unreadable
     try:
-        return PILImage.new("RGBA", (64, 64), (249, 115, 22, 255))
+        return pil_mod.new("RGBA", (64, 64), (249, 115, 22, 255))  # type: ignore[attr-defined]
     except Exception:
         return None
 
@@ -963,17 +967,7 @@ class SystemTrayController:
         if self._pystray is None or self._pil_image is None:
             return False
 
-        # Load image using the active PIL module
-        image = None
-        icon_path = resolve_tray_icon_path(self._repo_root)
-        if icon_path is not None:
-            try:
-                with self._pil_image.open(icon_path) as img:  # type: ignore[attr-defined]
-                    image = img.convert("RGBA").copy()
-            except Exception:
-                image = None
-        if image is None:
-            image = _load_tray_image(self._repo_root)
+        image = _load_tray_image(self._repo_root, pil_image_mod=self._pil_image)
         if image is None:
             return False
 

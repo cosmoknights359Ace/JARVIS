@@ -145,17 +145,17 @@ def write_vbs_launcher(
 def build_shortcut_creator_vbs(
     vbs_launcher_path: Path,
     working_dir: Path,
-    icon_path: Path,
+    icon_path: Optional[Path] = None,
     shortcut_name: str = SHORTCUT_NAME,
     desktop_dir: Optional[Path] = None,
 ) -> str:
     """
     Builds a self-contained VBScript that creates `JARVIS.lnk` on the user's
     Windows Desktop (automatically honoring OneDrive-redirected Desktop paths).
+    Applies `IconLocation` only when the `.ico` file is present.
     """
     target_esc = _escape_vbs_string(str(vbs_launcher_path.resolve()))
     workdir_esc = _escape_vbs_string(str(working_dir.resolve()))
-    icon_esc = _escape_vbs_string(str(icon_path.resolve()))
     name_esc = _escape_vbs_string(shortcut_name)
 
     if desktop_dir is not None:
@@ -163,16 +163,27 @@ def build_shortcut_creator_vbs(
     else:
         desktop_expr = 'WshShell.SpecialFolders("Desktop")'
 
+    icon_block = ""
+    if icon_path is not None:
+        icon_esc = _escape_vbs_string(str(icon_path.resolve()))
+        icon_block = (
+            f'IconPath = "{icon_esc}"\r\n'
+            "If Fso.FileExists(IconPath) Then\r\n"
+            '    Shortcut.IconLocation = IconPath & ",0"\r\n'
+            "End If\r\n"
+        )
+
     return (
         "Option Explicit\r\n"
-        "Dim WshShell, DesktopDir, ShortcutPath, Shortcut\r\n"
+        "Dim WshShell, Fso, DesktopDir, ShortcutPath, Shortcut, IconPath\r\n"
         'Set WshShell = CreateObject("WScript.Shell")\r\n'
+        'Set Fso = CreateObject("Scripting.FileSystemObject")\r\n'
         f"DesktopDir = {desktop_expr}\r\n"
         f'ShortcutPath = DesktopDir & "\\{name_esc}"\r\n'
         "Set Shortcut = WshShell.CreateShortcut(ShortcutPath)\r\n"
         f'Shortcut.TargetPath = "{target_esc}"\r\n'
         f'Shortcut.WorkingDirectory = "{workdir_esc}"\r\n'
-        f'Shortcut.IconLocation = "{icon_esc},0"\r\n'
+        f"{icon_block}"
         'Shortcut.Description = "Launch J.A.R.V.I.S Desktop Assistant"\r\n'
         "Shortcut.WindowStyle = 7\r\n"
         "Shortcut.Save\r\n"
