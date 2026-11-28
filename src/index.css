@@ -81,10 +81,135 @@
   animation: triangleCoreBreath 3s ease-in-out infinite;
 }
 
+@keyframes hudRotateCw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hudRotateCcw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes hudCircuitPulse {
+  0%, 100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes hudOrangeStandbyPulse {
+  0%, 100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.jarvis-hud-core {
+  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.22));
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+.jarvis-hud-core.jarvis-hud-offline {
+  filter: drop-shadow(0 0 10px rgba(249, 115, 22, 0.16));
+}
+
+.jarvis-hud-core.jarvis-hud-ready {
+  filter: drop-shadow(0 0 15px rgba(56, 189, 248, 0.24));
+}
+
+.jarvis-hud-core.jarvis-hud-thinking {
+  filter: drop-shadow(0 0 26px rgba(56, 189, 248, 0.52))
+    drop-shadow(0 0 14px rgba(249, 115, 22, 0.42));
+}
+
+.hud-cyan-layer {
+  opacity: 1;
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+.jarvis-hud-offline .hud-cyan-layer {
+  opacity: 0.4;
+}
+
+.hud-core-text {
+  opacity: 1;
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+.jarvis-hud-offline .hud-core-text {
+  opacity: 0.78;
+}
+
+.hud-orange-accent {
+  opacity: 0.95;
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+.jarvis-hud-offline .hud-orange-accent {
+  animation: hudOrangeStandbyPulse 3.2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.jarvis-hud-thinking .hud-orange-accent {
+  animation: hudOrangeStandbyPulse 1.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.hud-ring-inner {
+  transform-box: view-box;
+  animation: hudRotateCw 18s linear infinite;
+  will-change: transform;
+}
+
+.hud-ring-middle {
+  transform-box: view-box;
+  animation: hudRotateCcw 12s linear infinite;
+  will-change: transform;
+}
+
+.hud-ring-outer {
+  transform-box: view-box;
+  animation: hudRotateCw 26s linear infinite;
+  will-change: transform;
+}
+
+.hud-circuit-pulse {
+  animation: hudCircuitPulse 4.2s ease-in-out infinite;
+  will-change: opacity;
+  transition: opacity 0.4s ease;
+}
+
+.jarvis-hud-offline .hud-circuit-pulse {
+  animation-duration: 6.4s;
+}
+
+.jarvis-hud-thinking .hud-circuit-pulse {
+  animation-duration: 1.75s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-triangle-fade,
   .animate-triangle-inner,
-  .animate-triangle-core {
+  .animate-triangle-core,
+  .hud-ring-inner,
+  .hud-ring-middle,
+  .hud-ring-outer,
+  .hud-circuit-pulse,
+  .jarvis-hud-offline .hud-orange-accent,
+  .jarvis-hud-thinking .hud-orange-accent {
     animation: none;
   }
 }

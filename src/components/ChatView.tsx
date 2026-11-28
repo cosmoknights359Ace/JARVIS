@@ -22,16 +22,29 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Loader2,
-  CornerDownRight
+  CornerDownRight,
+  ExternalLink,
+  X,
+  Bug,
+  BookOpen,
+  FileCode2,
+  Database
 } from 'lucide-react';
 import { ChatMessage, JarvisSettings, MemoryStore, SystemStats } from '../types';
 import { QUICK_SLASH_COMMANDS, QuickSlashCommand } from '../services/jarvisBrain';
 import { DictationService, SpeechService } from '../services/speech';
 import { sfx } from '../services/soundEffects';
 import { ArcReactor } from './ArcReactor';
+import { JarvisHudCore } from './JarvisHudCore';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { formatModelOptionLabel, getModelOptionBadge } from '../utils/modelOptions';
 import { resolveTierNumCtx } from '../utils/hardwareTier';
+import { formatWelcomeStatus, resolveHudEngineState } from '../utils/hudGeometry';
+import {
+  MANAGE_MODELS_SELECT_VALUE,
+  STARTER_PROMPTS,
+  StarterPromptChip
+} from '../utils/modelManager';
 
 interface ChatMessageItemProps {
   message: ChatMessage;
@@ -337,6 +350,8 @@ interface ChatViewProps {
   onClearScreen: () => void;
   onOpenVision: () => void;
   onOpenCapabilities: () => void;
+  onOpenModelManager: () => void;
+  onRefreshOllama: () => Promise<void> | void;
   selectedModel: string;
   onSelectModel: (model: string) => void;
   settings: JarvisSettings;
@@ -360,6 +375,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onClearScreen,
   onOpenVision,
   onOpenCapabilities,
+  onOpenModelManager,
+  onRefreshOllama,
   selectedModel,
   onSelectModel,
   settings,
@@ -381,6 +398,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [quickMemVal, setQuickMemVal] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const [ollamaBannerDismissed, setOllamaBannerDismissed] = useState(false);
+  const [isRetryingOllama, setIsRetryingOllama] = useState(false);
 
   // Input history buffer (Up/Down arrow key support)
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
@@ -629,6 +648,42 @@ export const ChatView: React.FC<ChatViewProps> = ({
     sfx.playCommandConfirm();
   };
 
+  const handleStarterPromptClick = (chip: StarterPromptChip) => {
+    sfx.playClick();
+    setInputText(chip.prompt);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        const len = chip.prompt.length;
+        el.setSelectionRange(len, len);
+      }
+    });
+  };
+
+  const handleRetryOllama = async () => {
+    sfx.playClick();
+    setIsRetryingOllama(true);
+    try {
+      await onRefreshOllama();
+    } finally {
+      setIsRetryingOllama(false);
+    }
+  };
+
+  const getStarterIcon = (id: string) => {
+    switch (id) {
+      case 'debug-code':
+        return <Bug size={15} className="text-orange-400 shrink-0" />;
+      case 'explain-simply':
+        return <BookOpen size={15} className="text-orange-400 shrink-0" />;
+      case 'quick-script':
+        return <FileCode2 size={15} className="text-orange-400 shrink-0" />;
+      default:
+        return <Database size={15} className="text-orange-400 shrink-0" />;
+    }
+  };
+
   const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assist')?.id;
 
   const contentMaxWidthClass = showInspector ? 'max-w-3xl' : 'max-w-5xl';
@@ -806,23 +861,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Right Controls: Model Route + Mic + Send/Stop */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto min-w-0 justify-end">
             <select
               value={selectedModel}
-              onChange={(e) => onSelectModel(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value === MANAGE_MODELS_SELECT_VALUE) {
+                  onOpenModelManager();
+                  return;
+                }
+                onSelectModel(e.target.value);
+              }}
               aria-label="Select AI Model"
               title={
                 stats.hardware
                   ? `${stats.resolvedModel} · ${getModelOptionBadge(stats.resolvedModel, stats.hardware)} · ${resolveTierNumCtx(stats.resolvedModel, stats.hardware)} ctx (${stats.hardware.tier})`
                   : undefined
               }
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 max-w-[265px] truncate shrink-0"
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-orange-500 min-w-0 flex-1 sm:flex-none sm:max-w-[250px] truncate"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
                   {formatModelOptionLabel(m, stats.resolvedModel, stats.hardware)}
                 </option>
               ))}
+              <option value={MANAGE_MODELS_SELECT_VALUE}>
+                Manage Models...
+              </option>
             </select>
 
             <button
@@ -900,17 +964,82 @@ export const ChatView: React.FC<ChatViewProps> = ({
     </div>
   );
 
-  const providerSummary =
-    stats.activeProvider === 'ollama'
-      ? `Local Ollama (${stats.resolvedModel})`
-      : stats.activeProvider === 'gemini'
-      ? `Gemini Cloud · route ${stats.resolvedModel}`
-      : 'Engine offline';
+  const hudEngineState = resolveHudEngineState({
+    isStreaming,
+    warmUpStatus: stats.warmUpStatus,
+    activeProvider: stats.activeProvider
+  });
+
+  const welcomeStatus = formatWelcomeStatus({
+    activeProvider: stats.activeProvider,
+    warmUpStatus: stats.warmUpStatus,
+    warmUpModel: stats.warmUpModel,
+    resolvedModel: stats.resolvedModel,
+    fallbackModel: settings.generalModel,
+    probeLatencyMs: stats.probeLatencyMs
+  });
 
   return (
     <div className="flex-1 flex min-h-0 bg-[#070709] relative">
       {/* Primary Stage */}
       <section className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
+        {/* Friendly Non-Blocking Ollama Recovery Banner */}
+        {stats.ollamaProbeCompleted && !stats.ollamaReachable && !ollamaBannerDismissed && (
+          <div
+            role="status"
+            data-testid="ollama-offline-banner"
+            className="px-4 sm:px-5 py-2 bg-[#12100E] border-b border-orange-500/30 text-xs flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 relative z-30 shrink-0"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertTriangle size={14} className="text-orange-400 shrink-0" />
+              <div className="min-w-0 truncate">
+                <span className="font-semibold text-zinc-100">
+                  Local AI Engine (Ollama) is not running.
+                </span>{' '}
+                <span className="text-zinc-400 hidden 2xl:inline">
+                  {stats.geminiAvailable
+                    ? 'Cloud fallback is active.'
+                    : 'Launch Ollama or run ollama serve.'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleRetryOllama}
+                disabled={isRetryingOllama}
+                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <RefreshCw
+                  size={11}
+                  className={`text-orange-400 ${isRetryingOllama ? 'animate-spin' : ''}`}
+                />
+                <span>{isRetryingOllama ? 'Checking...' : 'Retry Connection'}</span>
+              </button>
+
+              <a
+                href="https://ollama.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/40 text-orange-300 font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+              >
+                <span>Download Ollama</span>
+                <ExternalLink size={11} />
+              </a>
+
+              <button
+                type="button"
+                onClick={() => setOllamaBannerDismissed(true)}
+                aria-label="Dismiss Ollama offline notice"
+                className="p-1 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Re-open Right Sidebar Toggle when Collapsed (xl+) */}
         {!showInspector && (
           <button
@@ -933,25 +1062,62 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {messages.length === 0 ? (
           /* Centered Zero-State Stage when Session is Fresh */
-          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-8 flex flex-col items-center justify-center relative z-10">
-            <div className={`w-full ${contentMaxWidthClass} mx-auto flex flex-col items-center text-center space-y-6 transition-[max-width] duration-250 ease-out`}>
-              <ArcReactor size={150} pulsing={true} />
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col items-center relative z-10">
+            <div className={`w-full ${contentMaxWidthClass} mx-auto my-auto flex flex-col items-center text-center space-y-4 transition-[max-width] duration-250 ease-out`}>
+              <JarvisHudCore
+                size={232}
+                engineState={hudEngineState}
+              />
 
               <div className="space-y-1.5">
                 <h1 className="text-2xl sm:text-3xl font-display font-bold text-zinc-100 tracking-tight text-balance">
                   At your service, Sir.
                 </h1>
-                <p className="text-xs sm:text-sm text-zinc-400 max-w-lg mx-auto">
-                  Engine: <code className="font-mono text-orange-400">{providerSummary}</code>
-                  {stats.probeLatencyMs !== null && (
-                    <>
-                      {' '}· <span className="font-mono tabular-nums">{stats.probeLatencyMs}ms ping</span>
-                    </>
-                  )}
+                <p
+                  data-testid="welcome-status-line"
+                  className="text-xs sm:text-sm text-zinc-400 max-w-lg mx-auto transition-colors duration-300"
+                >
+                  Status:{' '}
+                  <span
+                    className={`font-mono tabular-nums ${
+                      welcomeStatus.kind === 'offline'
+                        ? 'text-amber-400/80'
+                        : welcomeStatus.kind === 'warming'
+                        ? 'text-orange-400'
+                        : 'text-sky-300'
+                    }`}
+                  >
+                    {welcomeStatus.label}
+                  </span>
                 </p>
               </div>
 
               {renderComposerCard()}
+
+              {/* 2x2 One-Click Starter Prompt Grid */}
+              <div
+                data-testid="starter-prompts-grid"
+                className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-left"
+              >
+                {STARTER_PROMPTS.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => handleStarterPromptClick(chip)}
+                    className="group flex items-start gap-3 px-4 py-3 rounded-xl bg-[#111115] hover:bg-[#16161C] border border-zinc-800/90 hover:border-orange-500/45 transition-colors text-left"
+                  >
+                    <div className="mt-0.5">{getStarterIcon(chip.id)}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold text-zinc-100 group-hover:text-orange-400 transition-colors">
+                        {chip.title}
+                      </div>
+                      <div className="text-xs text-zinc-400 mt-0.5 leading-snug">
+                        {chip.description}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         ) : (

@@ -39,6 +39,13 @@ import urllib.request
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
 
+try:
+    import pystray  # type: ignore
+    from PIL import Image as PILImage  # type: ignore
+except ImportError:
+    pystray = None  # type: ignore
+    PILImage = None  # type: ignore
+
 REPO_ROOT = Path(__file__).resolve().parent
 WINDOW_TITLE = "JARVIS"
 DEFAULT_HOST = "127.0.0.1"
@@ -816,6 +823,204 @@ class DesktopApi:
 
 
 
+# ---------------------------------------------------------------------------
+# System Tray Integration (pystray + Pillow, graceful optional fallback)
+# ---------------------------------------------------------------------------
+
+
+def resolve_tray_icon_path(repo_root: Path = REPO_ROOT) -> Optional[Path]:
+    """Prefers `assets/jarvis_circle.ico`, falling back to `assets/jarvis_circle.png`."""
+    for name in ("jarvis_circle.ico", "jarvis_circle.png"):
+        candidate = repo_root / "assets" / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_tray_image(repo_root: Path = REPO_ROOT) -> Optional[object]:
+    """Loads the JARVIS tray icon as a detached PIL Image (safe against Windows file locks)."""
+    if PILImage is None:
+        return None
+
+    icon_path = resolve_tray_icon_path(repo_root)
+    if icon_path is not None:
+        try:
+            with PILImage.open(icon_path) as img:
+                return img.convert("RGBA").copy()
+        except Exception:
+            pass
+
+    # Fallback Obsidian & Orange square icon if asset file is missing or unreadable
+    try:
+        return PILImage.new("RGBA", (64, 64), (249, 115, 22, 255))
+    except Exception:
+        return None
+
+
+class SystemTrayController:
+    """
+    Runs a detached `pystray` system tray icon alongside `pywebview` while keeping
+    `webview.start()` in control of the main UI thread.
+    """
+
+    def __init__(
+        self,
+        window: object,
+        manager: Optional[ServerProcessManager] = None,
+        repo_root: Path = REPO_ROOT,
+        pystray_mod: Optional[object] = None,
+        pil_image_mod: Optional[object] = None,
+    ) -> None:
+        self._window = window
+        self._manager = manager
+        self._repo_root = repo_root
+        self._pystray = pystray if pystray_mod is None else pystray_mod
+        self._pil_image = PILImage if pil_image_mod is None else pil_image_mod
+        self._icon: Optional[object] = None
+        self._lock = threading.Lock()
+        self._is_visible = True
+        self._quitting = False
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    @property
+    def is_visible(self) -> bool:
+        with self._lock:
+            return self._is_visible
+
+    @property
+    def quitting(self) -> bool:
+        with self._lock:
+            return self._quitting
+
+    def show_window(self) -> None:
+        try:
+            if hasattr(self._window, "show"):
+                self._window.show()  # type: ignore[attr-defined]
+            if hasattr(self._window, "restore"):
+                self._window.restore()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        with self._lock:
+            self._is_visible = True
+
+    def hide_window(self) -> None:
+        try:
+            if hasattr(self._window, "hide"):
+                self._window.hide()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        with self._lock:
+            self._is_visible = False
+
+    def toggle_window(self, _icon: object = None, _item: object = None) -> None:
+        with self._lock:
+            currently_visible = self._is_visible
+        if currently_visible:
+            self.hide_window()
+        else:
+            self.show_window()
+
+    def on_window_closing(self, *_args: object) -> bool:
+        """
+        Hook for `window.events.closing`: hides JARVIS to the system tray instead
+        of terminating the app unless "Quit JARVIS" was explicitly triggered.
+        """
+        with self._lock:
+            should_allow_close = self._quitting or not self._active
+        if should_allow_close:
+            return True
+        self.hide_window()
+        return False
+
+    def quit_app(self, _icon: object = None, _item: object = None) -> None:
+        """Stops the tray icon, shuts down the local Node backend, and destroys the window."""
+        with self._lock:
+            if self._quitting:
+                return
+            self._quitting = True
+
+        self.stop()
+
+        if self._manager is not None:
+            try:
+                self._manager.stop()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self._window, "destroy"):
+                self._window.destroy()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def start(self) -> bool:
+        """Starts the tray icon via `icon.run_detached()`. Returns False if unavailable."""
+        if self._pystray is None or self._pil_image is None:
+            return False
+
+        # Load image using the active PIL module
+        image = None
+        icon_path = resolve_tray_icon_path(self._repo_root)
+        if icon_path is not None:
+            try:
+                with self._pil_image.open(icon_path) as img:  # type: ignore[attr-defined]
+                    image = img.convert("RGBA").copy()
+            except Exception:
+                image = None
+        if image is None:
+            image = _load_tray_image(self._repo_root)
+        if image is None:
+            return False
+
+        try:
+            menu = self._pystray.Menu(  # type: ignore[attr-defined]
+                self._pystray.MenuItem(  # type: ignore[attr-defined]
+                    "Show / Hide JARVIS",
+                    self.toggle_window,
+                    default=True,
+                ),
+                self._pystray.MenuItem(  # type: ignore[attr-defined]
+                    "Quit JARVIS",
+                    self.quit_app,
+                ),
+            )
+            icon = self._pystray.Icon(  # type: ignore[attr-defined]
+                WINDOW_TITLE,
+                image,
+                "J.A.R.V.I.S",
+                menu=menu,
+            )
+            icon.run_detached()
+            with self._lock:
+                self._icon = icon
+                self._active = True
+            return True
+        except Exception as exc:
+            print(f"[JARVIS] System tray unavailable ({exc}); continuing without tray icon.", flush=True)
+            with self._lock:
+                self._icon = None
+                self._active = False
+            return False
+
+    def stop(self) -> None:
+        """Idempotently stops the tray icon if active."""
+        with self._lock:
+            icon = self._icon
+            self._icon = None
+            self._active = False
+
+        if icon is not None:
+            try:
+                icon.stop()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+
 def launch_desktop_window(
     url: str,
     debug: bool = False,
@@ -999,6 +1204,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[JARVIS] Server ready — opening desktop window.", flush=True)
 
     app_url = f"http://{DEFAULT_HOST}:{port}"
+    tray: Optional[SystemTrayController] = None
 
     try:
         window, webview_mod, start_kwargs = launch_desktop_window(
@@ -1007,13 +1213,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             gui=args.gui,
         )
 
-        if manager is not None and hasattr(window, "events") and hasattr(window.events, "closed"):
-            window.events.closed += lambda *_args: manager.stop()
+        tray = SystemTrayController(window=window, manager=manager, repo_root=REPO_ROOT)
+        tray_started = tray.start()
+
+        if tray_started and hasattr(window, "events") and hasattr(window.events, "closing"):
+            window.events.closing += tray.on_window_closing
+
+        if hasattr(window, "events") and hasattr(window.events, "closed"):
+            def _on_closed(*_args: object) -> None:
+                if tray is not None:
+                    tray.stop()
+                if manager is not None:
+                    manager.stop()
+
+            window.events.closed += _on_closed
 
         webview_mod.start(**start_kwargs)  # type: ignore[attr-defined]
     except KeyboardInterrupt:
         pass
     finally:
+        if tray is not None:
+            tray.stop()
         if manager is not None:
             print("[JARVIS] Shutting down local server...", flush=True)
             manager.stop()

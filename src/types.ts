@@ -48,11 +48,20 @@ export interface ChatSession {
 
 export type MemoryStore = Record<string, string>;
 
+export interface OllamaInstalledModel {
+  name: string;
+  size: number | null;
+  modifiedAt?: string;
+  parameterSize?: string;
+  quantizationLevel?: string;
+}
+
 export interface SystemStats {
   clock: string;
   isOnline: boolean;
   activeProvider: EngineProvider;
   ollamaReachable: boolean;
+  ollamaProbeCompleted: boolean;
   geminiAvailable: boolean;
   probeLatencyMs: number | null;
   lastTtftMs: number | null;
@@ -61,6 +70,7 @@ export interface SystemStats {
   serverUptimeSec: number | null;
   resolvedModel: string;
   installedModels: string[];
+  installedModelDetails: OllamaInstalledModel[];
   warmUpStatus: WarmUpStatus;
   warmUpModel: string | null;
   hardware: HardwareProfile | null;

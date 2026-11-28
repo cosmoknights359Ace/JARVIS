@@ -6,7 +6,8 @@ import {
   Trash2,
   FileDown,
   ShieldCheck,
-  RefreshCw
+  RefreshCw,
+  Download
 } from 'lucide-react';
 import { JarvisSettings, SystemStats } from '../types';
 import { SpeechService } from '../services/speech';
@@ -21,6 +22,7 @@ interface SettingsViewProps {
   onExportChat: () => void;
   stats: SystemStats;
   onRefreshOllama: () => void;
+  onOpenModelManager?: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -29,7 +31,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onClearHistory,
   onExportChat,
   stats,
-  onRefreshOllama
+  onRefreshOllama,
+  onOpenModelManager
 }) => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [attributionReport, setAttributionReport] = useState(() => verifyAttributionReport());
@@ -94,17 +97,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </h2>
             </div>
 
-            <button
-              onClick={onRefreshOllama}
-              className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 flex items-center gap-1.5 transition-colors"
-            >
-              <RefreshCw size={12} className="text-orange-500" />
-              <span>
-                {stats.ollamaReachable
-                  ? `Connected (${stats.installedModels.length} models)`
-                  : 'Sync Ollama'}
-              </span>
-            </button>
+            <div className="flex items-center gap-2">
+              {onOpenModelManager && (
+                <button
+                  type="button"
+                  onClick={onOpenModelManager}
+                  className="px-3 py-1.5 rounded-xl bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/40 text-xs font-medium text-orange-300 flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <Download size={12} />
+                  <span>Manage Models</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onRefreshOllama}
+                className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <RefreshCw size={12} className="text-orange-500" />
+                <span>
+                  {stats.ollamaReachable
+                    ? `Connected (${stats.installedModels.length} models)`
+                    : 'Sync Ollama'}
+                </span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">

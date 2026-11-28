@@ -5,10 +5,15 @@ import {
   EngineProvider,
   SystemStats,
   WarmUpStatus,
-  HardwareProfile
+  HardwareProfile,
+  OllamaInstalledModel
 } from '../types';
 import { getShort } from './attribution';
 import { formatHardwareReadout, selectBestModelForTier } from '../utils/hardwareTier';
+import {
+  consumeOllamaPullNdjson,
+  OllamaPullProgressEvent
+} from '../utils/modelManager';
 
 export const CODING_KEYWORDS = [
   'code', 'python', 'java', 'c++', 'javascript', 'typescript', 'html', 'css',
@@ -299,6 +304,7 @@ export interface CommandResult {
 export interface HealthProbeResult {
   reachable: boolean;
   models: string[];
+  modelDetails: OllamaInstalledModel[];
   geminiAvailable: boolean;
   activeProvider: EngineProvider;
   probeLatencyMs: number | null;
@@ -476,9 +482,24 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
           ? data.warmUp.model.trim()
           : null;
 
+      const models: string[] = Array.isArray(data?.models) ? data.models : [];
+      const modelDetails: OllamaInstalledModel[] = Array.isArray(data?.modelDetails)
+        ? data.modelDetails
+            .filter((m: any) => typeof m?.name === 'string' && m.name.trim())
+            .map((m: any) => ({
+              name: String(m.name).trim(),
+              size: typeof m.size === 'number' && Number.isFinite(m.size) ? m.size : null,
+              modifiedAt: typeof m.modifiedAt === 'string' ? m.modifiedAt : undefined,
+              parameterSize: typeof m.parameterSize === 'string' ? m.parameterSize : undefined,
+              quantizationLevel:
+                typeof m.quantizationLevel === 'string' ? m.quantizationLevel : undefined
+            }))
+        : models.map((name) => ({ name, size: null }));
+
       return {
         reachable,
-        models: Array.isArray(data?.models) ? data.models : [],
+        models,
+        modelDetails,
         geminiAvailable,
         activeProvider,
         probeLatencyMs:
@@ -499,6 +520,7 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
   return {
     reachable: false,
     models: [],
+    modelDetails: [],
     geminiAvailable: false,
     activeProvider: 'offline',
     probeLatencyMs: null,
@@ -509,6 +531,132 @@ export async function probeLocalOllama(host: string): Promise<HealthProbeResult>
     attributionSeal: 'ceff726d5d41618b',
     licenseFileIntact: true
   };
+}
+
+export async function* pullOllamaModelStream(
+  model: string,
+  ollamaHost: string,
+  signal?: AbortSignal
+): AsyncGenerator<OllamaPullProgressEvent, void, unknown> {
+  const response = await fetch('/api/models/pull', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      model: model.trim(),
+      ollamaHost: ollamaHost || 'http://localhost:11434'
+    })
+  });
+
+  if (!response.ok) {
+    let errMsg = `Failed to pull "${model}" (HTTP ${response.status}).`;
+    try {
+      const errData = await response.json();
+      if (typeof errData?.error === 'string' && errData.error.trim()) {
+        errMsg = errData.error.trim();
+      }
+    } catch {
+      // ignore parse failure
+    }
+    yield {
+      status: 'error',
+      percent: null,
+      done: true,
+      error: errMsg
+    };
+    return;
+  }
+
+  if (!response.body) {
+    yield {
+      status: 'error',
+      percent: null,
+      done: true,
+      error: 'Empty progress stream received from server.'
+    };
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let carry = '';
+  let finished = false;
+
+  const onAbort = () => {
+    reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    while (true) {
+      if (signal?.aborted) return;
+      const { done, value } = await reader.read();
+      if (done || signal?.aborted) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const { events, remainder } = consumeOllamaPullNdjson(carry, chunk);
+      carry = remainder;
+
+      for (const evt of events) {
+        yield evt;
+        if (evt.done || evt.error) {
+          finished = true;
+        }
+      }
+    }
+
+    if (!signal?.aborted && carry.trim()) {
+      const { events } = consumeOllamaPullNdjson('', `${carry}\n`);
+      for (const evt of events) {
+        yield evt;
+        if (evt.done || evt.error) {
+          finished = true;
+        }
+      }
+    }
+
+    if (!signal?.aborted && !finished) {
+      yield { status: 'success', percent: 100, done: true };
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function deleteOllamaModel(
+  model: string,
+  ollamaHost: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const response = await fetch('/api/models/delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model.trim(),
+        ollamaHost: ollamaHost || 'http://localhost:11434'
+      })
+    });
+
+    if (!response.ok) {
+      let errMsg = `Failed to delete "${model}" (HTTP ${response.status}).`;
+      try {
+        const data = await response.json();
+        if (typeof data?.error === 'string' && data.error.trim()) {
+          errMsg = data.error.trim();
+        }
+      } catch {
+        // ignore parse failure
+      }
+      return { ok: false, error: errMsg };
+    }
+
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      error: 'Could not reach J.A.R.V.I.S server to delete the model.'
+    };
+  }
 }
 
 export function handleCommand(

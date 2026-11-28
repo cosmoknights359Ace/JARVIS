@@ -31,6 +31,11 @@ import {
   formatHardwareReadout,
   selectBestModelForTier
 } from './src/utils/hardwareTier.ts';
+import {
+  isValidOllamaModelTag,
+  consumeOllamaPullNdjson,
+  resolveSafeOllamaHost
+} from './server/modelManagerUtils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,12 +99,24 @@ function getAiClient(): GoogleGenAI | null {
   });
 }
 
+interface OllamaInstalledModelDetail {
+  name: string;
+  size: number | null;
+  modifiedAt?: string;
+  parameterSize?: string;
+  quantizationLevel?: string;
+}
+
 async function checkLocalOllamaServer(
   host: string
-): Promise<{ reachable: boolean; models: string[]; latencyMs: number }> {
-  const cleanHost = (host || 'http://127.0.0.1:11434')
-    .replace(/\/+$/, '')
-    .replace('localhost', '127.0.0.1');
+): Promise<{
+  reachable: boolean;
+  models: string[];
+  modelDetails: OllamaInstalledModelDetail[];
+  latencyMs: number;
+}> {
+  const safeHost = resolveSafeOllamaHost(host);
+  const cleanHost = safeHost.ok ? safeHost.host : 'http://127.0.0.1:11434';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1500);
   const started = Date.now();
@@ -111,15 +128,32 @@ async function checkLocalOllamaServer(
     });
     clearTimeout(timeout);
     const latencyMs = Math.max(1, Date.now() - started);
-    if (!res.ok) return { reachable: false, models: [], latencyMs };
+    if (!res.ok) return { reachable: false, models: [], modelDetails: [], latencyMs };
     const data: any = await res.json();
-    const models = Array.isArray(data?.models)
-      ? data.models.map((m: any) => m.name).filter(Boolean)
-      : [];
-    return { reachable: true, models, latencyMs };
+    const rawModels = Array.isArray(data?.models) ? data.models : [];
+    const modelDetails: OllamaInstalledModelDetail[] = rawModels
+      .filter((m: any) => typeof m?.name === 'string' && m.name.trim())
+      .map((m: any) => ({
+        name: String(m.name).trim(),
+        size: typeof m.size === 'number' && Number.isFinite(m.size) ? m.size : null,
+        modifiedAt: typeof m.modified_at === 'string' ? m.modified_at : undefined,
+        parameterSize:
+          typeof m?.details?.parameter_size === 'string' ? m.details.parameter_size : undefined,
+        quantizationLevel:
+          typeof m?.details?.quantization_level === 'string'
+            ? m.details.quantization_level
+            : undefined
+      }));
+    const models = modelDetails.map((m) => m.name);
+    return { reachable: true, models, modelDetails, latencyMs };
   } catch {
     clearTimeout(timeout);
-    return { reachable: false, models: [], latencyMs: Math.max(1, Date.now() - started) };
+    return {
+      reachable: false,
+      models: [],
+      modelDetails: [],
+      latencyMs: Math.max(1, Date.now() - started)
+    };
   }
 }
 
@@ -223,7 +257,7 @@ async function startServer() {
   app.use(express.json({ limit: '15mb' }));
 
   // Stamp creator attribution on all API responses (DMCA §1202 CMI)
-  app.use('/api/jarvis', (_req, res, next) => {
+  app.use(['/api/jarvis', '/api/models'], (_req, res, next) => {
     res.setHeader('X-Creator-Attribution', CREATOR_ATTRIBUTION_HEADER);
     res.setHeader('X-Copyright-Seal', EXPECTED_COPYRIGHT_SEAL);
     next();
@@ -261,6 +295,7 @@ async function startServer() {
     res.json({
       reachable: ollamaStatus.reachable,
       models: ollamaStatus.models,
+      modelDetails: ollamaStatus.modelDetails,
       geminiAvailable,
       activeProvider,
       probeLatencyMs: ollamaStatus.reachable ? ollamaStatus.latencyMs : Math.max(1, Date.now() - reqStart),
@@ -268,6 +303,207 @@ async function startServer() {
       warmUp: warmUpState,
       attribution
     });
+  });
+
+  // ============================================================================
+  // In-App Ollama Model Manager Endpoints (Pull Stream + Delete)
+  // ============================================================================
+
+  app.post('/api/models/pull', async (req, res) => {
+    const rawModel = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+    const rawHost = typeof req.body?.ollamaHost === 'string' ? req.body.ollamaHost : undefined;
+
+    if (!isValidOllamaModelTag(rawModel)) {
+      res.status(400).json({
+        error: 'Provide a valid Ollama model tag (for example: qwen2.5:3b or gemma4).'
+      });
+      return;
+    }
+
+    const safeHost = resolveSafeOllamaHost(rawHost);
+    if (!safeHost.ok) {
+      res.status(400).json({ error: safeHost.error });
+      return;
+    }
+
+    let clientClosed = false;
+    const upstreamAbort = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientClosed = true;
+        upstreamAbort.abort();
+      }
+    });
+
+    const connectTimer = setTimeout(() => {
+      upstreamAbort.abort();
+    }, 15000);
+
+    try {
+      const ollamaRes = await fetch(`${safeHost.host}/api/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: rawModel, stream: true }),
+        signal: upstreamAbort.signal
+      });
+      clearTimeout(connectTimer);
+
+      if (!ollamaRes.ok) {
+        let errMessage = `Ollama returned HTTP ${ollamaRes.status} while pulling "${rawModel}".`;
+        try {
+          const errJson: any = await ollamaRes.json();
+          if (typeof errJson?.error === 'string' && errJson.error.trim()) {
+            errMessage = errJson.error.trim();
+          }
+        } catch {
+          // ignore non-json error
+        }
+        res.status(ollamaRes.status >= 400 && ollamaRes.status < 600 ? ollamaRes.status : 502).json({
+          error: errMessage
+        });
+        return;
+      }
+
+      if (!ollamaRes.body) {
+        res.status(502).json({ error: 'Ollama returned an empty pull stream.' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+
+      const writeLine = (payload: Record<string, unknown>) => {
+        if (!clientClosed && !res.writableEnded) {
+          res.write(`${JSON.stringify(payload)}\n`);
+        }
+      };
+
+      const reader = ollamaRes.body.getReader();
+      const decoder = new TextDecoder();
+      let carry = '';
+      let sawTerminal = false;
+
+      while (!clientClosed) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkText = decoder.decode(value, { stream: true });
+        if (carry.length + chunkText.length > 262144) {
+          carry = '';
+        }
+        const { events, remainder } = consumeOllamaPullNdjson(carry, chunkText);
+        carry = remainder;
+
+        for (const evt of events) {
+          writeLine({
+            status: evt.status,
+            digest: evt.digest,
+            completed: evt.completed,
+            total: evt.total,
+            percent: evt.percent,
+            done: evt.done,
+            error: evt.error
+          });
+          if (evt.done || evt.error) {
+            sawTerminal = true;
+          }
+        }
+      }
+
+      if (!clientClosed && carry.trim()) {
+        const { events } = consumeOllamaPullNdjson('', `${carry}\n`);
+        for (const evt of events) {
+          writeLine({
+            status: evt.status,
+            digest: evt.digest,
+            completed: evt.completed,
+            total: evt.total,
+            percent: evt.percent,
+            done: evt.done,
+            error: evt.error
+          });
+          if (evt.done || evt.error) {
+            sawTerminal = true;
+          }
+        }
+      }
+
+      reader.cancel().catch(() => {});
+
+      if (!clientClosed && !res.writableEnded) {
+        if (!sawTerminal) {
+          writeLine({ status: 'success', percent: 100, done: true });
+        }
+        res.end();
+      }
+    } catch (err: any) {
+      clearTimeout(connectTimer);
+      if (clientClosed) return;
+      const isAbort = err?.name === 'AbortError';
+      const errMsg = isAbort
+        ? 'Timed out connecting to local Ollama. Ensure Ollama is running and try again.'
+        : 'Local AI Engine (Ollama) is not running. Launch Ollama and try again.';
+      if (!res.headersSent) {
+        res.status(503).json({ error: errMsg });
+      } else if (!res.writableEnded) {
+        res.write(`${JSON.stringify({ status: 'error', error: errMsg, done: true })}\n`);
+        res.end();
+      }
+    }
+  });
+
+  app.delete('/api/models/delete', async (req, res) => {
+    const rawModel = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+    const rawHost = typeof req.body?.ollamaHost === 'string' ? req.body.ollamaHost : undefined;
+
+    if (!isValidOllamaModelTag(rawModel)) {
+      res.status(400).json({ error: 'Provide a valid Ollama model tag to delete.' });
+      return;
+    }
+
+    const safeHost = resolveSafeOllamaHost(rawHost);
+    if (!safeHost.ok) {
+      res.status(400).json({ error: safeHost.error });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const ollamaRes = await fetch(`${safeHost.host}/api/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: rawModel }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      if (!ollamaRes.ok) {
+        let errMessage = `Could not delete model "${rawModel}" (HTTP ${ollamaRes.status}).`;
+        try {
+          const errJson: any = await ollamaRes.json();
+          if (typeof errJson?.error === 'string' && errJson.error.trim()) {
+            errMessage = errJson.error.trim();
+          }
+        } catch {
+          // ignore non-json error
+        }
+        res.status(ollamaRes.status >= 400 && ollamaRes.status < 600 ? ollamaRes.status : 502).json({
+          error: errMessage
+        });
+        return;
+      }
+
+      res.json({ deleted: true, model: rawModel });
+    } catch {
+      clearTimeout(timeout);
+      res.status(503).json({
+        error: 'Local AI Engine (Ollama) is not running. Launch Ollama before deleting models.'
+      });
+    }
   });
 
   // Streaming Chat Endpoint (Local Ollama -> Gemini Cloud via SSE with real latency & abort handling)

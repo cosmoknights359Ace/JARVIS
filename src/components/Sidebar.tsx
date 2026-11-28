@@ -12,7 +12,8 @@ import {
   X,
   Sparkles,
   Presentation,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Download
 } from 'lucide-react';
 import { NavView, ChatSession, SystemStats } from '../types';
 import { formatHardwareReadout, roundGb, shortenGpuName } from '../utils/hardwareTier';
@@ -28,6 +29,7 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   stats: SystemStats;
   onRefreshOllama: () => void;
+  onOpenModelManager: () => void;
   showInspector: boolean;
   onToggleInspector: () => void;
   mobileOpen: boolean;
@@ -54,6 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteSession,
   stats,
   onRefreshOllama,
+  onOpenModelManager,
   showInspector,
   onToggleInspector,
   mobileOpen,
@@ -479,6 +482,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {stats.lastTokensPerSec !== null ? `${stats.lastTokensPerSec} tok/s` : '—'}
               </span>
             </div>
+          </div>
+
+          <div className="pt-2 border-t border-zinc-900">
+            <button
+              type="button"
+              onClick={() => {
+                onOpenModelManager();
+                onCloseMobile();
+              }}
+              className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-900 hover:bg-orange-500/15 border border-zinc-800 hover:border-orange-500/40 text-zinc-200 hover:text-orange-300 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <Download size={12} className="text-orange-400 shrink-0" />
+              <span>Manage Models</span>
+            </button>
           </div>
         </div>
       </div>

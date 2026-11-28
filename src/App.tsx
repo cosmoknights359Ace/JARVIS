@@ -19,6 +19,7 @@ import { MemoryView } from './components/MemoryView';
 import { SettingsView } from './components/SettingsView';
 import { CapabilitiesModal } from './components/CapabilitiesModal';
 import { OnboardingModal } from './components/OnboardingModal';
+import { ModelManagerModal } from './components/ModelManagerModal';
 import {
   JarvisRouter,
   handleCommand,
@@ -66,8 +67,15 @@ export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<NavView>('CHAT');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [showCapabilities, setShowCapabilities] = useState<boolean>(false);
+  const [showModelManager, setShowModelManager] = useState<boolean>(false);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
     try {
+      if (
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('autostart') === '1'
+      ) {
+        return false;
+      }
       return localStorage.getItem('jarvis_onboarding_seen') !== 'true';
     } catch {
       return false;
@@ -147,6 +155,7 @@ export const App: React.FC = () => {
     isOnline: true,
     activeProvider: 'offline',
     ollamaReachable: false,
+    ollamaProbeCompleted: false,
     geminiAvailable: false,
     probeLatencyMs: null,
     lastTtftMs: null,
@@ -155,6 +164,7 @@ export const App: React.FC = () => {
     serverUptimeSec: null,
     resolvedModel: settings.model === 'auto' ? settings.generalModel : settings.model,
     installedModels: [],
+    installedModelDetails: [],
     warmUpStatus: 'idle',
     warmUpModel: null,
     hardware: null,
@@ -271,11 +281,13 @@ export const App: React.FC = () => {
     setStats((prev) => ({
       ...prev,
       ollamaReachable: res.reachable,
+      ollamaProbeCompleted: true,
       geminiAvailable: res.geminiAvailable,
       activeProvider: res.activeProvider,
       probeLatencyMs: res.probeLatencyMs,
       serverUptimeSec: res.serverUptimeSec,
       installedModels: res.models,
+      installedModelDetails: res.modelDetails,
       warmUpStatus: res.warmUpStatus,
       warmUpModel: res.warmUpModel,
       attributionVerified: localOk && res.attributionVerified,
@@ -854,6 +866,10 @@ export const App: React.FC = () => {
           onDeleteSession={handleDeleteSession}
           stats={stats}
           onRefreshOllama={checkOllamaHealth}
+          onOpenModelManager={() => {
+            sfx.playClick();
+            setShowModelManager(true);
+          }}
           showInspector={showInspector}
           onToggleInspector={() => {
             sfx.playClick();
@@ -877,6 +893,11 @@ export const App: React.FC = () => {
               onClearScreen={handleClearScreen}
               onOpenVision={() => handleSelectView('VISION')}
               onOpenCapabilities={() => setShowCapabilities(true)}
+              onOpenModelManager={() => {
+                sfx.playClick();
+                setShowModelManager(true);
+              }}
+              onRefreshOllama={checkOllamaHealth}
               selectedModel={settings.model}
               onSelectModel={handleSelectModel}
               settings={settings}
@@ -955,6 +976,10 @@ export const App: React.FC = () => {
               onExportChat={handleExportChat}
               stats={stats}
               onRefreshOllama={checkOllamaHealth}
+              onOpenModelManager={() => {
+                sfx.playClick();
+                setShowModelManager(true);
+              }}
             />
           )}
         </main>
@@ -969,6 +994,17 @@ export const App: React.FC = () => {
           handleSendMessage(cmd);
         }}
         onSelectView={handleSelectView}
+      />
+
+      {/* In-App Ollama Model Manager Modal */}
+      <ModelManagerModal
+        isOpen={showModelManager}
+        onClose={() => setShowModelManager(false)}
+        stats={stats}
+        ollamaHost={settings.ollamaHost}
+        selectedModel={settings.model}
+        onSelectModel={handleSelectModel}
+        onRefreshOllama={checkOllamaHealth}
       />
 
       {/* First-Launch Quick-Start Tip Screen */}
