@@ -2,6 +2,7 @@
 
 @layer base {
   :root {
+    --font-brand: 'Orbitron', 'Outfit', 'Segoe UI', system-ui, sans-serif;
     --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -18,6 +19,19 @@
     font-family: var(--font-sans);
     overflow: hidden;
   }
+}
+
+.font-brand {
+  font-family: var(--font-brand);
+}
+
+.jarvis-brand-wordmark {
+  text-shadow: 0 0 12px rgba(249, 115, 22, 0.34);
+}
+
+.jarvis-brand-dot {
+  color: #F97316;
+  text-shadow: 0 0 8px rgba(249, 115, 22, 0.85);
 }
 
 .font-display {

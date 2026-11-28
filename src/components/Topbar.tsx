@@ -1,6 +1,7 @@
 import React from 'react';
 import { Menu, Sparkles, Presentation, ArrowLeftRight, HelpCircle } from 'lucide-react';
 import { NavView } from '../types';
+import { JarvisBrandLogo } from './JarvisBrandLogo';
 
 interface TopbarProps {
   currentView: NavView;
@@ -40,13 +41,14 @@ export const Topbar: React.FC<TopbarProps> = ({
 
         <a
           href="#assistant"
+          aria-label="J.A.R.V.I.S. Home"
           onClick={(e) => {
             e.preventDefault();
             onSelectView('CHAT');
           }}
-          className="text-lg font-display font-bold tracking-widest text-orange-500 whitespace-nowrap shrink-0"
+          className="inline-flex items-center whitespace-nowrap shrink-0 hover:opacity-95 transition-opacity"
         >
-          J.A.R.V.I.S
+          <JarvisBrandLogo />
         </a>
       </div>
 

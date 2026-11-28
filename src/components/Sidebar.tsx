@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { NavView, ChatSession, SystemStats } from '../types';
 import { formatHardwareReadout, roundGb, shortenGpuName } from '../utils/hardwareTier';
+import { JarvisBrandLogo } from './JarvisBrandLogo';
 
 interface SidebarProps {
   currentView: NavView;
@@ -129,10 +130,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <div className="h-full flex flex-col justify-between p-4 select-none overflow-y-auto">
       <div className="space-y-5 min-h-0 flex flex-col flex-1">
         {/* Mobile Drawer Header */}
-        <div className="flex lg:hidden items-center justify-between pb-2 border-b border-zinc-900">
-          <span className="text-sm font-display font-bold tracking-widest text-orange-500">
-            J.A.R.V.I.S
-          </span>
+        <div className="flex lg:hidden items-center justify-between gap-2 pb-2 border-b border-zinc-900">
+          <JarvisBrandLogo />
           <button
             type="button"
             onClick={onCloseMobile}
